@@ -119,7 +119,9 @@ class InstallTests(unittest.TestCase):
     def test_agents_host_targets_shared_user_skills_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env = os.environ.copy()
+            # Path.home() reads HOME on POSIX and USERPROFILE on Windows.
             env["HOME"] = temp_dir
+            env["USERPROFILE"] = temp_dir
             completed = self.run_installer("--host", "agents", "--dry-run", env=env)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertIn(str(Path(temp_dir) / ".agents" / "skills" / "doc-sync"), completed.stdout)
