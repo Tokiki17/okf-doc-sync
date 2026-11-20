@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = REPO_ROOT / "skills" / "doc-sync" / "scripts" / "validate_okf.py"
 
 
-class ValidateOkfV02Tests(unittest.TestCase):
+class ValidateOkfMetadataTests(unittest.TestCase):
     def run_validator(self, bundle: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(VALIDATOR), str(bundle), *args],
@@ -21,10 +21,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             check=False,
         )
 
-    def write_v02_bundle(self, root: Path) -> Path:
+    def write_bundle(self, root: Path) -> Path:
         (root / "concepts").mkdir(parents=True)
         (root / "index.md").write_text(
-            '---\nokf_version: "0.2"\n---\n\n# Index\n\n* [Coverage](concepts/coverage.md)\n',
+            '---\nokf_version: "0.3"\n---\n\n# Index\n\n* [Coverage](concepts/coverage.md)\n',
             encoding="utf-8",
         )
         (root / "log.md").write_text("# Log\n\n## 2026-09-05\n\n* Created.\n", encoding="utf-8")
@@ -40,27 +40,27 @@ class ValidateOkfV02Tests(unittest.TestCase):
         )
         return concept
 
-    def test_v02_profile_accepts_typed_concept_without_legacy_timestamp_or_citations(self) -> None:
+    def test_profile_accepts_typed_concept_without_legacy_timestamp_or_citations(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            self.write_v02_bundle(root)
+            self.write_bundle(root)
             completed = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_v02_consumer_accepts_type_only_concept_without_generated(self) -> None:
+    def test_consumer_accepts_type_only_concept_without_generated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "index.md").write_text(
-                '---\nokf_version: "0.2"\n---\n\n# Index\n\n* [Thing](thing.md)\n', encoding="utf-8"
+                '---\nokf_version: "0.3"\n---\n\n# Index\n\n* [Thing](thing.md)\n', encoding="utf-8"
             )
             (root / "thing.md").write_text("---\ntype: Vendor Concept\n---\n\n# Thing\n", encoding="utf-8")
             completed = self.run_validator(root)
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_v02_consumer_accepts_verified_list_but_warns_missing_source_resource(self) -> None:
+    def test_consumer_accepts_verified_list_but_warns_missing_source_resource(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -73,10 +73,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertIn("sources[0].resource", completed.stderr)
 
-    def test_v02_profile_requires_generated_by_and_timezone_aware_at(self) -> None:
+    def test_profile_requires_generated_by_and_timezone_aware_at(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "generated: { by: 'process:doc-sync', at: '2026-09-05T10:00:00+08:00' }",
@@ -89,10 +89,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertIn("generated.by", completed.stderr)
             self.assertIn("generated.at", completed.stderr)
 
-    def test_v02_known_metadata_is_warned_for_consumers_and_rejected_by_profile(self) -> None:
+    def test_known_metadata_is_warned_for_consumers_and_rejected_by_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "generated: { by: 'process:doc-sync', at: '2026-09-05T10:00:00+08:00' }",
@@ -113,10 +113,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertIn("stale_after", profile.stderr)
             self.assertIn("sources", profile.stderr)
 
-    def test_v02_accepts_verified_bare_mapping_and_unknown_extensions(self) -> None:
+    def test_accepts_verified_bare_mapping_and_unknown_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -128,10 +128,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             completed = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_v02_source_local_links_follow_consumer_and_producer_link_policy(self) -> None:
+    def test_source_local_links_follow_consumer_and_producer_link_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -146,10 +146,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertEqual(profile.returncode, 1)
             self.assertIn("broken local link", profile.stderr)
 
-    def test_v02_source_scope_descriptor_is_not_treated_as_a_broken_path(self) -> None:
+    def test_source_scope_descriptor_is_not_treated_as_a_broken_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -160,10 +160,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             completed = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_v02_source_path_heuristic_distinguishes_descriptors_and_relative_paths(self) -> None:
+    def test_source_path_heuristic_distinguishes_descriptors_and_relative_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -179,10 +179,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertNotIn("project.dataset.table", consumer.stderr)
             self.assertEqual(profile.returncode, 1)
 
-    def test_v02_usage_windows_must_be_complete_ordered_and_cover_usage_count(self) -> None:
+    def test_usage_windows_must_be_complete_ordered_and_cover_usage_count(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -201,12 +201,12 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertIn("must not be after", consumer.stderr)
             self.assertEqual(profile.returncode, 1)
 
-    def test_v02_actor_convention_is_checked_for_generated_and_verified_only(self) -> None:
+    def test_actor_convention_is_checked_for_generated_and_verified_only(self) -> None:
         valid_actors = ("human:reviewer", "process:nightly", "writer/v2")
         for actor in valid_actors:
             with self.subTest(actor=actor), tempfile.TemporaryDirectory() as temp_dir:
                 root = Path(temp_dir)
-                concept = self.write_v02_bundle(root)
+                concept = self.write_bundle(root)
                 concept.write_text(
                     concept.read_text(encoding="utf-8").replace(
                         "'process:doc-sync'", repr(actor),
@@ -221,7 +221,7 @@ class ValidateOkfV02Tests(unittest.TestCase):
         for actor in ("human:", "process:", "writer/", "bare"):
             with self.subTest(invalid_actor=actor), tempfile.TemporaryDirectory() as temp_dir:
                 root = Path(temp_dir)
-                concept = self.write_v02_bundle(root)
+                concept = self.write_bundle(root)
                 concept.write_text(
                     concept.read_text(encoding="utf-8").replace("'process:doc-sync'", repr(actor)),
                     encoding="utf-8",
@@ -232,10 +232,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
                 self.assertIn("actor", consumer.stderr)
                 self.assertEqual(profile.returncode, 1)
 
-    def test_v02_footnote_requires_definition_and_ignores_literal_or_image_syntax(self) -> None:
+    def test_footnote_requires_definition_and_ignores_literal_or_image_syntax(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -251,10 +251,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             completed = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_v02_individual_timestamp_values_are_not_masked_by_another_field(self) -> None:
+    def test_individual_timestamp_values_are_not_masked_by_another_field(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -274,10 +274,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertIn("sources[1].last_modified", completed.stderr)
             self.assertIn("sources[1].usage_window.to", completed.stderr)
 
-    def test_v02_known_null_and_container_shapes_warn_without_tracebacks(self) -> None:
+    def test_null_and_empty_values_mean_absent_without_tracebacks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "generated: { by: 'process:doc-sync', at: '2026-09-05T10:00:00+08:00' }",
@@ -288,15 +288,15 @@ class ValidateOkfV02Tests(unittest.TestCase):
             consumer = self.run_validator(root)
             profile = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(consumer.returncode, 0, consumer.stderr)
-            self.assertIn("WARNING", consumer.stderr)
-            self.assertNotIn("Traceback", consumer.stderr)
+            self.assertEqual(consumer.stderr, "")
             self.assertEqual(profile.returncode, 1)
+            self.assertIn("requires generated.by and generated.at", profile.stderr)
             self.assertNotIn("Traceback", profile.stderr)
 
-    def test_v02_attested_computation_runtime_is_checked_without_executing_it(self) -> None:
+    def test_attested_computation_runtime_is_checked_without_executing_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace("type: Coverage Manifest", "type: Attested Computation"),
                 encoding="utf-8",
@@ -308,10 +308,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertEqual(profile.returncode, 1)
             self.assertIn("runtime", profile.stderr)
 
-    def test_v02_source_ids_must_be_unique_and_used_footnotes_are_covered(self) -> None:
+    def test_source_ids_must_be_unique_and_used_footnotes_are_covered(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -325,10 +325,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             self.assertIn("duplicate sources[].id", completed.stderr)
 
-    def test_v02_profile_allows_source_id_without_a_claim_footnote(self) -> None:
+    def test_profile_allows_source_id_without_a_claim_footnote(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -340,10 +340,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             completed = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_v02_footnotes_do_not_become_local_links(self) -> None:
+    def test_footnotes_do_not_become_local_links(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -355,10 +355,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             completed = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_v02_direct_link_label_is_not_an_attribution_footnote(self) -> None:
+    def test_direct_link_label_is_not_an_attribution_footnote(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8")
                 + "\n[^ordinary-label](https://example.com/navigation)\n",
@@ -367,10 +367,10 @@ class ValidateOkfV02Tests(unittest.TestCase):
             completed = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_v02_malformed_source_url_reports_a_diagnostic_without_crashing(self) -> None:
+    def test_malformed_source_url_reports_a_diagnostic_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
+            concept = self.write_bundle(root)
             concept.write_text(
                 concept.read_text(encoding="utf-8").replace(
                     "---\n\n# Coverage\n",
@@ -385,16 +385,6 @@ class ValidateOkfV02Tests(unittest.TestCase):
             self.assertEqual(profile.returncode, 1)
             self.assertNotIn("Traceback", profile.stderr)
             self.assertIn("invalid source resource", profile.stderr)
-
-    def test_legacy_v01_profile_still_requires_legacy_timestamp(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            concept = self.write_v02_bundle(root)
-            index = root / "index.md"
-            index.write_text(index.read_text(encoding="utf-8").replace('"0.2"', '"0.1"'), encoding="utf-8")
-            completed = self.run_validator(root, "--doc-sync-profile")
-            self.assertEqual(completed.returncode, 1)
-            self.assertIn("timestamp", completed.stderr)
 
 
 if __name__ == "__main__":

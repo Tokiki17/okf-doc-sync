@@ -5,7 +5,7 @@ description: Maps DocSync concerns to their authoritative living documents and k
 tags: [governance, coverage, documentation]
 generated:
   by: process:doc-sync
-  at: 2026-10-09T14:58:36+08:00
+  at: 2026-11-20T15:26:48+09:00
 sources:
   - id: governance
     resource: ../../../AGENTS.md
@@ -25,7 +25,7 @@ sources:
 | Automated validation | [`scripts/validate_repo.py`](../../../scripts/validate_repo.py) and [`tests/`](../../../tests/) | [Installation and validation](../engineering/install-and-validation.md) | Current active |
 | Continuous integration | [CI workflow](../../../.github/workflows/ci.yml) | [Installation and validation](../engineering/install-and-validation.md) | Current active |
 | Project navigation | [Documentation index](../../../docs/index.md) | [OKF index](../../index.md) | Current active |
-| Format interpretation | [OKF v0.2 reference](../../../skills/doc-sync/references/okf-v0.2.md) and [v0.1 compatibility](../../../skills/doc-sync/references/okf-v0.1.md) | [Skill contract](../engineering/skill-contract.md) | Current active |
+| Format interpretation | [OKF reference](../../../skills/doc-sync/references/okf.md) and [migration guide](../../../skills/doc-sync/references/okf-migration.md) | [Skill contract](../engineering/skill-contract.md) | Current active; upstream SPEC v0.3 checked 2026-11-20 |
 | Markdown and profile validation | [`validate_okf.py`](../../../skills/doc-sync/scripts/validate_okf.py) | [Installation and validation](../engineering/install-and-validation.md) | Current active |
 | Host portability and installation | [Host compatibility](../../../docs/host-compatibility.md) | [Host compatibility](../engineering/host-compatibility.md) | Current active policy |
 | Delegated execution | [Delegation reference](../../../skills/doc-sync/references/delegation.md) | [Host compatibility](../engineering/host-compatibility.md) | Current active guidance; sources checked 2026-11-20; not forward-tested on a host |

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Validate OKF v0.1/v0.2 bundles and the stricter DocSync producer profile."""
+"""Validate OKF v0.3 bundles and the stricter DocSync producer profile.
+
+Earlier versions are read best-effort; the profile reports them for migration.
+"""
 
 from __future__ import annotations
 
@@ -10,22 +13,30 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
 
 FRONTMATTER_DELIMITER = "---"
-H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 REFERENCE_DEFINITION_RE = re.compile(r"^ {0,3}\[([^\]\n]+)\]:[ \t]*(.*)$")
 FOOTNOTE_DEFINITION_RE = re.compile(r"^ {0,3}\[\^([^\]\n]+)\]:", re.MULTILINE)
 FOOTNOTE_REFERENCE_RE = re.compile(r"(?<!\[)\[\^([^\]\n]+)\]")
 RESERVED_NAMES = {"index.md", "log.md"}
-SUPPORTED_OKF_VERSIONS = {"0.1", "0.2"}
-LEGACY_OKF_VERSION = "0.1"
-CURRENT_OKF_VERSION = "0.2"
+CURRENT_OKF_VERSION = "0.3"
+# Earlier versions are read best-effort and migrated, not maintained as producer profiles.
+LEGACY_OKF_VERSIONS = {"0.1", "0.2"}
+MIGRATION_GUIDE = "references/okf-migration.md"
+ROOT_INDEX_STRING_KEYS = ("title", "description", "license")
+RFC3339_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+RFC3339_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
+PRODUCER_ACTOR_RE = re.compile(r"^[^\s/:]+/\S+$")
+SCHEME_ACTOR_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:\S+$")
+ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 
 
 @dataclass
@@ -415,34 +426,69 @@ def extract_markdown_link_targets(
     return targets
 
 
-def validate_concept(path: Path, result: ValidationResult) -> ConceptDocument | None:
+def _not_a_concept(path: Path, result: ValidationResult, profile: bool, reason: str) -> None:
+    """OKF section 3.2: a Markdown file without frontmatter or type is not a concept."""
+    if profile:
+        result.errors.append(
+            f"{path}: DocSync profile requires every non-reserved bundle Markdown file to be a typed concept ({reason})"
+        )
+    else:
+        result.warnings.append(f"{path}: not an OKF concept and skipped ({reason})")
+
+
+def validate_concept(path: Path, result: ValidationResult, profile: bool = False) -> ConceptDocument | None:
     try:
         header, body = split_frontmatter(path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         result.errors.append(f"{path}: {exc}")
         return None
     if header is None:
-        result.errors.append(f"{path}: concept is missing YAML frontmatter")
+        _not_a_concept(path, result, profile, "concept is missing YAML frontmatter")
         return None
     try:
         metadata = parse_yaml(header)
     except (RuntimeError, ValueError) as exc:
         result.errors.append(f"{path}: invalid YAML frontmatter: {exc}")
         return None
+    if metadata is None:
+        metadata = {}
     if not isinstance(metadata, dict):
         result.errors.append(f"{path}: frontmatter must be a YAML mapping")
         return None
     concept_type = metadata.get("type")
     if not isinstance(concept_type, str) or not concept_type.strip():
-        result.errors.append(f"{path}: frontmatter requires a non-empty string 'type'")
+        _not_a_concept(path, result, profile, "frontmatter requires a non-empty string 'type'")
         return None
     return ConceptDocument(path=path, metadata=metadata, frontmatter=header, body=body)
+
+
+def read_declared_version(bundle_root: Path) -> str | None:
+    """Return the root index okf_version string, if one is declared and readable."""
+    try:
+        header, _ = split_frontmatter((bundle_root / "index.md").read_text(encoding="utf-8"))
+        parsed = parse_yaml(header) if header is not None else None
+    except (OSError, UnicodeDecodeError, ValueError, RuntimeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    version = parsed.get("okf_version")
+    return version.strip() if isinstance(version, str) and version.strip() else None
+
+
+def _version_notice(version: str) -> str:
+    if version in LEGACY_OKF_VERSIONS:
+        return (
+            f"bundle declares OKF v{version}; DocSync maintains only v{CURRENT_OKF_VERSION}. "
+            f"Migrate it with {MIGRATION_GUIDE}"
+        )
+    return f"unknown OKF version '{version}'; attempting best-effort validation with v{CURRENT_OKF_VERSION} rules"
 
 
 def validate_index(
     path: Path,
     bundle_root: Path,
     result: ValidationResult,
+    profile: bool = False,
 ) -> dict[str, Any] | None:
     try:
         header, body = split_frontmatter(path.read_text(encoding="utf-8"))
@@ -454,33 +500,57 @@ def validate_index(
     if header is not None and not is_root:
         result.errors.append(f"{path}: nested index.md must not contain frontmatter")
     if header is not None and is_root:
-        try:
-            parsed = parse_yaml(header)
-        except (RuntimeError, ValueError) as exc:
-            result.errors.append(f"{path}: invalid root index frontmatter: {exc}")
-            parsed = None
-        if not isinstance(parsed, dict):
-            result.errors.append(f"{path}: root index frontmatter must be a YAML mapping")
-        elif (
-            set(parsed) != {"okf_version"}
-            or not isinstance(parsed["okf_version"], str)
-            or not parsed["okf_version"].strip()
-        ):
-            result.errors.append(
-                f"{path}: root index frontmatter may contain only a non-empty okf_version"
-            )
-        else:
-            metadata = parsed
-            version = parsed["okf_version"].strip()
-            if version not in SUPPORTED_OKF_VERSIONS:
-                result.warnings.append(
-                    f"{path}: unknown OKF version '{version}'; attempting best-effort validation"
-                )
+        metadata = _validate_root_index_metadata(path, bundle_root, header, result, profile)
     if not re.search(r"^#\s+\S", body, re.MULTILINE):
         result.errors.append(f"{path}: index.md requires at least one Markdown heading")
     if not extract_markdown_link_targets(body):
         result.errors.append(f"{path}: index.md requires at least one Markdown link entry")
     return metadata
+
+
+def _validate_root_index_metadata(
+    path: Path,
+    bundle_root: Path,
+    header: str,
+    result: ValidationResult,
+    profile: bool,
+) -> dict[str, Any] | None:
+    """Check bundle metadata: okf_version, title, description, license, extension keys (section 8.1)."""
+    try:
+        parsed = parse_yaml(header)
+    except (RuntimeError, ValueError) as exc:
+        result.errors.append(f"{path}: invalid root index frontmatter: {exc}")
+        return None
+    if parsed is None:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        result.errors.append(f"{path}: root index frontmatter must be a YAML mapping")
+        return None
+    version = parsed.get("okf_version")
+    if not _blank(version) and not _non_empty_string(version):
+        result.errors.append(f"{path}: root index okf_version must be a non-empty quoted string")
+        return None
+    for key in ROOT_INDEX_STRING_KEYS:
+        value = parsed.get(key)
+        if _blank(value):
+            continue
+        if not _non_empty_string(value):
+            message = f"{path}: root index {key} must be a non-empty string"
+            (result.errors if profile else result.warnings).append(message)
+        elif key == "description" and "\n" in value.strip() and profile:
+            result.errors.append(f"{path}: DocSync profile root index description must be one line")
+    license_value = parsed.get("license")
+    if _non_empty_string(license_value) and _looks_like_local_path(license_value):
+        candidate, problem = _local_candidate(path, bundle_root, license_value)
+        if candidate is not None and (problem or not candidate.exists()):
+            message = f"{path}: root index license path does not resolve in the bundle '{license_value}'"
+            (result.errors if profile else result.warnings).append(message)
+    if _non_empty_string(version):
+        if version.strip() != CURRENT_OKF_VERSION:
+            result.warnings.append(f"{path}: {_version_notice(version.strip())}")
+    else:
+        result.warnings.append(f"{path}: root index frontmatter does not declare okf_version")
+    return parsed
 
 
 def validate_log(path: Path, result: ValidationResult) -> None:
@@ -551,41 +621,6 @@ def _normalized_type(value: Any) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold() if isinstance(value, str) else ""
 
 
-def _valid_timezone_timestamp(value: Any) -> bool:
-    return _parse_timezone_timestamp(value) is not None
-
-
-def _parse_timezone_timestamp(value: Any) -> datetime | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None and value.utcoffset() is not None else None
-    if not isinstance(value, str):
-        return None
-    candidate = value.strip()
-    if candidate.endswith("Z"):
-        candidate = candidate[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(candidate)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
-
-
-def _valid_legacy_timestamp(value: Any, frontmatter: str) -> bool:
-    match = re.search(r"^timestamp:[ \t]*(.+?)[ \t]*$", frontmatter, re.MULTILINE)
-    if not match:
-        return False
-    candidate = match.group(1).strip().strip("\"'")
-    if candidate.endswith("Z"):
-        candidate = candidate[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(candidate)
-    except ValueError:
-        return False
-    return parsed.tzinfo is not None and parsed.utcoffset() is not None
-
-
 def _metadata_problem(
     concept: ConceptDocument, result: ValidationResult, profile: bool, message: str
 ) -> None:
@@ -600,6 +635,51 @@ def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _blank(value: Any) -> bool:
+    """Section 11.2: null, an empty string, and an empty list mean an absent key."""
+    return value is None or (isinstance(value, str) and not value.strip()) or value == []
+
+
+def _as_list(value: Any) -> list[Any]:
+    """Section 11.2: one item stands for a list with one item."""
+    if _blank(value):
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _parse_okf_timestamp(value: Any) -> datetime | None:
+    """Parse the two RFC 3339 forms of section 5: a date-time with an offset, or a date (UTC midnight)."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None and value.utcoffset() is not None else None
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    try:
+        if RFC3339_DATE_RE.match(candidate):
+            day = date.fromisoformat(candidate)
+            return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        if RFC3339_DATETIME_RE.match(candidate):
+            return datetime.fromisoformat(candidate.upper().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return None
+
+
+def _is_date_only(value: Any) -> bool:
+    if isinstance(value, datetime):
+        return False
+    if isinstance(value, date):
+        return True
+    return isinstance(value, str) and bool(RFC3339_DATE_RE.match(value.strip()))
+
+
+TIMESTAMP_RULE = "an RFC 3339 date-time with an offset or a date"
+
+
 def _validate_usage_window(
     concept: ConceptDocument,
     value: Any,
@@ -612,21 +692,22 @@ def _validate_usage_window(
         return
     timestamps: dict[str, datetime] = {}
     for field_name in ("from", "to"):
-        if field_name not in value:
+        if _blank(value.get(field_name)):
             _metadata_problem(concept, result, profile, f"{label}.{field_name} is required")
             continue
-        parsed = _parse_timezone_timestamp(value[field_name])
+        parsed = _parse_okf_timestamp(value[field_name])
         if parsed is None:
-            _metadata_problem(
-                concept,
-                result,
-                profile,
-                f"{label}.{field_name} must be a timezone-aware ISO 8601 timestamp",
-            )
+            _metadata_problem(concept, result, profile, f"{label}.{field_name} must be {TIMESTAMP_RULE}")
         else:
             timestamps[field_name] = parsed
     if len(timestamps) == 2 and timestamps["from"] > timestamps["to"]:
         _metadata_problem(concept, result, profile, f"{label}.from must not be after {label}.to")
+
+
+def _valid_window(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        _parse_okf_timestamp(value.get(field_name)) is not None for field_name in ("from", "to")
+    )
 
 
 def _looks_like_local_path(value: str) -> bool:
@@ -641,15 +722,75 @@ def _looks_like_local_path(value: str) -> bool:
 
 
 def _valid_actor(value: Any) -> bool:
+    """Section 7: <producer>/<version>, or <scheme>:<id> with any scheme."""
     if not _non_empty_string(value):
         return False
     actor = value.strip()
-    if actor.startswith(("human:", "process:")):
-        return bool(actor.split(":", 1)[1].strip())
-    if "/" not in actor:
-        return False
-    producer, version = actor.split("/", 1)
-    return bool(producer.strip() and version.strip())
+    return bool(PRODUCER_ACTOR_RE.match(actor) or SCHEME_ACTOR_RE.match(actor))
+
+
+def _duplicate_keys(frontmatter: str) -> list[str]:
+    """Return dotted paths of repeated mapping keys (section 4)."""
+    try:
+        import yaml  # type: ignore
+    except ModuleNotFoundError:
+        seen: set[str] = set()
+        repeated: list[str] = []
+        for match in re.finditer(r"^([A-Za-z0-9_.\-]+)[ \t]*:", frontmatter, re.MULTILINE):
+            key = match.group(1)
+            if key in seen and key not in repeated:
+                repeated.append(key)
+            seen.add(key)
+        return repeated
+    try:
+        root = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
+    except Exception:  # pragma: no cover - parse errors are reported elsewhere
+        return []
+    repeated = []
+
+    def walk(node: Any, prefix: str) -> None:
+        if isinstance(node, yaml.MappingNode):
+            seen_keys: set[str] = set()
+            for key_node, value_node in node.value:
+                key = str(getattr(key_node, "value", ""))
+                label = f"{prefix}.{key}" if prefix else key
+                if key in seen_keys and label not in repeated:
+                    repeated.append(label)
+                seen_keys.add(key)
+                walk(value_node, label)
+        elif isinstance(node, yaml.SequenceNode):
+            for index, item in enumerate(node.value):
+                walk(item, f"{prefix}[{index}]")
+
+    walk(root, "")
+    return repeated
+
+
+def _computation_fence_count(body: str) -> int:
+    """Count fenced code blocks in the first section headed Computation (section 10.3)."""
+    level: int | None = None
+    count = 0
+    fence: str | None = None
+    for line in body.splitlines():
+        stripped = line.lstrip(" ")
+        if fence is not None:
+            if stripped.startswith(fence) and not stripped[len(fence):].strip(fence[0]).strip():
+                fence = None
+            continue
+        fence_match = re.match(r"(`{3,}|~{3,})", stripped) if len(line) - len(stripped) <= 3 else None
+        if fence_match:
+            fence = fence_match.group(1)
+            if level is not None:
+                count += 1
+            continue
+        heading = ATX_HEADING_RE.match(line)
+        if heading:
+            depth = len(heading.group(1))
+            if level is not None and depth <= level:
+                break
+            if level is None and heading.group(2).strip().casefold() == "computation":
+                level = depth
+    return count
 
 
 def _footnote_references(body: str) -> set[str]:
@@ -674,54 +815,133 @@ def _footnote_references(body: str) -> set[str]:
     return references
 
 
-def _validate_source_links(
+def _check_path_field(
     concept: ConceptDocument,
     bundle_root: Path,
     result: ValidationResult,
     strict_links: bool,
+    label: str,
+    value: Any,
+    declared_version: str | None,
+    descriptor_allowed: bool = False,
 ) -> None:
-    sources = concept.metadata.get("sources")
-    if not isinstance(sources, list):
+    """Resolve a path field (section 6.2); scope descriptors are skipped where allowed."""
+    if not isinstance(value, str) or not value.strip():
         return
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        resource = source.get("resource")
-        if not isinstance(resource, str):
-            continue
-        try:
-            if not _looks_like_local_path(resource):
-                continue
-            candidate, problem = _local_candidate(concept.path, bundle_root, resource)
-        except ValueError as exc:
-            _metadata_problem(
-                concept, result, strict_links, f"invalid source resource '{resource}': {exc}"
-            )
-            continue
-        if candidate is None:
-            continue
-        if problem == "escapes":
-            message = f"{concept.path}: local link escapes the bundle '{resource}'"
-        elif candidate.exists():
-            continue
-        else:
-            message = f"{concept.path}: broken local link '{resource}'"
-        if strict_links:
-            result.errors.append(message)
-        else:
-            result.warnings.append(message)
+    try:
+        if descriptor_allowed and not _looks_like_local_path(value):
+            return
+        candidate, problem = _local_candidate(concept.path, bundle_root, value)
+    except ValueError as exc:
+        kind = "source resource" if label.startswith("sources[") else label
+        _metadata_problem(concept, result, strict_links, f"invalid {kind} '{value}': {exc}")
+        return
+    if candidate is None:
+        return
+    if problem == "escapes":
+        message = f"{concept.path}: local link escapes the bundle '{value}'"
+    elif candidate.exists():
+        return
+    else:
+        decoded = unquote(urlsplit(value.strip()).path)
+        if (
+            not strict_links
+            and (declared_version is None or declared_version in LEGACY_OKF_VERSIONS)
+            and not decoded.startswith(("/", "./", "../"))
+        ):
+            # Section 6.2: v0.2-or-earlier and undeclared bundles may resolve a bare path from the root.
+            fallback = (bundle_root / decoded).resolve(strict=False)
+            if fallback.is_relative_to(bundle_root.resolve(strict=False)) and fallback.exists():
+                result.warnings.append(
+                    f"{concept.path}: {label} '{value}' resolves only from the bundle root; "
+                    f"rewrite it as '/{decoded}' when migrating to v{CURRENT_OKF_VERSION}"
+                )
+                return
+        message = f"{concept.path}: broken local link '{value}'"
+    if strict_links:
+        result.errors.append(message)
+    else:
+        result.warnings.append(message)
 
 
-def validate_v02_metadata(
+def _validate_attested_computation(
     concept: ConceptDocument,
     bundle_root: Path,
     result: ValidationResult,
     profile: bool,
     strict_links: bool,
+    declared_version: str | None,
 ) -> None:
     metadata = concept.metadata
+    if not _non_empty_string(metadata.get("runtime")):
+        _metadata_problem(concept, result, profile, "Attested Computation runtime must be a non-empty string")
+    for index, parameter in enumerate(_as_list(metadata.get("parameters"))):
+        label = f"parameters[{index}]"
+        if not isinstance(parameter, dict):
+            _metadata_problem(concept, result, profile, f"{label} must be a mapping")
+            continue
+        for key in ("name", "type"):
+            if not _non_empty_string(parameter.get(key)):
+                _metadata_problem(concept, result, profile, f"{label}.{key} must be a non-empty string")
+        if not _blank(parameter.get("required")) and not isinstance(parameter["required"], bool):
+            _metadata_problem(concept, result, profile, f"{label}.required must be a boolean")
+    computation = metadata.get("computation")
+    fences = _computation_fence_count(concept.body)
+    if not _blank(computation):
+        if not isinstance(computation, str):
+            _metadata_problem(concept, result, profile, "computation must be a path string")
+        else:
+            _check_path_field(
+                concept, bundle_root, result, strict_links, "computation", computation, declared_version
+            )
+        if fences:
+            result.warnings.append(
+                f"{concept.path}: computation is set, so the fenced block in the Computation section is ignored"
+            )
+    elif fences == 0:
+        result.warnings.append(
+            f"{concept.path}: no computation field or fenced block in a Computation section; "
+            "consumers treat this Attested Computation as not attestable"
+        )
+    elif fences > 1:
+        result.warnings.append(
+            f"{concept.path}: the Computation section has {fences} fenced blocks; consumers use the first"
+        )
+    for key in ("executor", "attester"):
+        value = metadata.get(key)
+        if _blank(value):
+            continue
+        if not isinstance(value, dict) or not _non_empty_string(value.get("resource")):
+            _metadata_problem(concept, result, profile, f"{key} must be a mapping with a non-empty resource")
+            continue
+        _check_path_field(
+            concept, bundle_root, result, strict_links, f"{key}.resource", value["resource"], declared_version
+        )
+        if key == "executor" and not _blank(value.get("receipt")) and not all(
+            _non_empty_string(item) for item in _as_list(value.get("receipt"))
+        ):
+            _metadata_problem(concept, result, profile, "executor.receipt must list field names")
+
+
+def validate_concept_metadata(
+    concept: ConceptDocument,
+    bundle_root: Path,
+    result: ValidationResult,
+    profile: bool,
+    strict_links: bool,
+    declared_version: str | None = CURRENT_OKF_VERSION,
+) -> None:
+    """Check the provenance, trust, lifecycle, and computation families (sections 5, 7, 10)."""
+    metadata = concept.metadata
+
+    def present(key: str) -> bool:
+        return not _blank(metadata.get(key))
+
+    for key in _duplicate_keys(concept.frontmatter):
+        _metadata_problem(concept, result, profile, f"frontmatter repeats the key '{key}'")
+
     generated = metadata.get("generated")
-    if "generated" in metadata:
+    if present("generated"):
         if not isinstance(generated, dict):
             _metadata_problem(concept, result, profile, "generated must be a mapping")
         else:
@@ -729,15 +949,19 @@ def validate_v02_metadata(
                 _metadata_problem(concept, result, profile, "generated.by must be a non-empty string")
             elif not _valid_actor(generated["by"]):
                 _metadata_problem(concept, result, profile, "generated.by must follow the OKF actor convention")
-            if "at" in generated and not _valid_timezone_timestamp(generated["at"]):
-                _metadata_problem(concept, result, profile, "generated.at must be a timezone-aware ISO 8601 timestamp")
+            if not _blank(generated.get("at")) and _parse_okf_timestamp(generated["at"]) is None:
+                _metadata_problem(concept, result, profile, f"generated.at must be {TIMESTAMP_RULE}")
     elif profile:
         result.errors.append(f"{concept.path}: DocSync profile requires generated.by and generated.at")
-    if profile and isinstance(generated, dict) and not _valid_timezone_timestamp(generated.get("at")):
-        result.errors.append(f"{concept.path}: DocSync profile requires generated.at to be a timezone-aware ISO 8601 timestamp")
+    if profile and isinstance(generated, dict):
+        generated_at = generated.get("at")
+        if _parse_okf_timestamp(generated_at) is None or _is_date_only(generated_at):
+            result.errors.append(
+                f"{concept.path}: DocSync profile requires generated.at to be a timezone-aware date-time"
+            )
 
     verified = metadata.get("verified")
-    if "verified" in metadata:
+    if present("verified"):
         events = [verified] if isinstance(verified, dict) else verified
         if not isinstance(events, list):
             _metadata_problem(concept, result, profile, "verified must be a mapping or list of mappings")
@@ -751,27 +975,50 @@ def validate_v02_metadata(
                     _metadata_problem(concept, result, profile, f"{label}.by must be a non-empty string")
                 elif not _valid_actor(event["by"]):
                     _metadata_problem(concept, result, profile, f"{label}.by must follow the OKF actor convention")
-                if not _valid_timezone_timestamp(event.get("at")):
-                    _metadata_problem(concept, result, profile, f"{label}.at must be a timezone-aware ISO 8601 timestamp")
+                if _parse_okf_timestamp(event.get("at")) is None:
+                    _metadata_problem(concept, result, profile, f"{label}.at must be {TIMESTAMP_RULE}")
+                elif profile and _is_date_only(event.get("at")):
+                    result.errors.append(
+                        f"{concept.path}: DocSync profile requires {label}.at to be a timezone-aware date-time"
+                    )
 
-    if "status" in metadata and (
-        not isinstance(metadata["status"], str)
-        or metadata["status"] not in {"draft", "stable", "deprecated"}
+    status = metadata.get("status")
+    if present("status") and (
+        not isinstance(status, str) or status not in {"draft", "stable", "deprecated"}
     ):
         _metadata_problem(concept, result, profile, "status must be draft, stable, or deprecated")
-    if "stale_after" in metadata and not _valid_timezone_timestamp(metadata["stale_after"]):
-        _metadata_problem(concept, result, profile, "stale_after must be a timezone-aware ISO 8601 timestamp")
-    if "usage_window" in metadata:
+    if present("superseded_by"):
+        superseded_by = metadata["superseded_by"]
+        if status != "deprecated":
+            _metadata_problem(concept, result, profile, "superseded_by requires status: deprecated")
+        if not isinstance(superseded_by, str):
+            _metadata_problem(concept, result, profile, "superseded_by must be a path string")
+        else:
+            _check_path_field(
+                concept, bundle_root, result, strict_links, "superseded_by", superseded_by, declared_version
+            )
+    if present("stale_after") and _parse_okf_timestamp(metadata["stale_after"]) is None:
+        _metadata_problem(concept, result, profile, f"stale_after must be {TIMESTAMP_RULE}")
+    if present("usage_window"):
         _validate_usage_window(concept, metadata["usage_window"], result, profile, "usage_window")
+    if present("resource"):
+        _check_path_field(
+            concept,
+            bundle_root,
+            result,
+            strict_links,
+            "resource",
+            metadata["resource"],
+            declared_version,
+            descriptor_allowed=True,
+        )
 
     sources = metadata.get("sources")
+    if isinstance(sources, dict):
+        sources = [sources]
     source_ids: set[str] = set()
-    shared_usage_window = metadata.get("usage_window")
-    has_valid_shared_window = isinstance(shared_usage_window, dict) and all(
-        _valid_timezone_timestamp(shared_usage_window.get(field_name))
-        for field_name in ("from", "to")
-    )
-    if "sources" in metadata:
+    has_valid_shared_window = _valid_window(metadata.get("usage_window"))
+    if present("sources"):
         if not isinstance(sources, list):
             _metadata_problem(concept, result, profile, "sources must be a list of mappings")
         else:
@@ -782,32 +1029,43 @@ def validate_v02_metadata(
                     continue
                 if not _non_empty_string(source.get("resource")):
                     _metadata_problem(concept, result, profile, f"{label}.resource must be a non-empty string")
+                else:
+                    _check_path_field(
+                        concept,
+                        bundle_root,
+                        result,
+                        strict_links,
+                        f"{label}.resource",
+                        source["resource"],
+                        declared_version,
+                        descriptor_allowed=True,
+                    )
                 for field_name in ("id", "title", "author"):
-                    if field_name in source and not _non_empty_string(source[field_name]):
+                    if not _blank(source.get(field_name)) and not _non_empty_string(source[field_name]):
                         _metadata_problem(concept, result, profile, f"{label}.{field_name} must be a non-empty string")
+                if _non_empty_string(source.get("author")) and not _valid_actor(source["author"]):
+                    _metadata_problem(concept, result, profile, f"{label}.author must follow the OKF actor convention")
                 if _non_empty_string(source.get("id")):
                     source_id = source["id"].strip()
                     if source_id in source_ids:
                         _metadata_problem(concept, result, profile, f"duplicate sources[].id '{source_id}'")
                     source_ids.add(source_id)
-                if "usage_count" in source and (isinstance(source["usage_count"], bool) or not isinstance(source["usage_count"], int) or source["usage_count"] < 0):
+                usage_count = source.get("usage_count")
+                has_usage_count = not _blank(usage_count)
+                if has_usage_count and (isinstance(usage_count, bool) or not isinstance(usage_count, int) or usage_count < 0):
                     _metadata_problem(concept, result, profile, f"{label}.usage_count must be a non-negative integer")
-                has_valid_source_window = isinstance(source.get("usage_window"), dict) and all(
-                    _valid_timezone_timestamp(source["usage_window"].get(field_name))
-                    for field_name in ("from", "to")
-                )
+                source_window_present = not _blank(source.get("usage_window"))
                 has_effective_window = (
-                    has_valid_source_window if "usage_window" in source else has_valid_shared_window
+                    _valid_window(source.get("usage_window")) if source_window_present else has_valid_shared_window
                 )
-                if "usage_count" in source and not has_effective_window:
+                if has_usage_count and not has_effective_window:
                     _metadata_problem(concept, result, profile, f"{label}.usage_count requires a shared or source usage_window")
-                if "last_modified" in source and not _valid_timezone_timestamp(source["last_modified"]):
-                    _metadata_problem(concept, result, profile, f"{label}.last_modified must be a timezone-aware ISO 8601 timestamp")
-                if "usage_window" in source:
+                if not _blank(source.get("last_modified")) and _parse_okf_timestamp(source["last_modified"]) is None:
+                    _metadata_problem(concept, result, profile, f"{label}.last_modified must be {TIMESTAMP_RULE}")
+                if source_window_present:
                     _validate_usage_window(concept, source["usage_window"], result, profile, f"{label}.usage_window")
-        _validate_source_links(concept, bundle_root, result, strict_links)
-    if _normalized_type(metadata.get("type")) == "attested computation" and not _non_empty_string(metadata.get("runtime")):
-        _metadata_problem(concept, result, profile, "Attested Computation runtime must be a non-empty string")
+    if _normalized_type(metadata.get("type")) == "attested computation":
+        _validate_attested_computation(concept, bundle_root, result, profile, strict_links, declared_version)
 
     masked_body = mask_markdown_code(concept.body)
     body_without_definitions = re.sub(
@@ -861,59 +1119,6 @@ def _index_reachable_concepts(bundle_root: Path, index_paths: list[Path]) -> set
     return concepts
 
 
-def _external_target(target: str) -> bool:
-    parsed = urlsplit(target)
-    return bool(parsed.scheme or parsed.netloc)
-
-
-def _validate_citations(concept: ConceptDocument, result: ValidationResult) -> None:
-    masked = mask_markdown_code(concept.body)
-    reference_definitions, _ = _reference_definitions(masked)
-    headings = list(H1_RE.finditer(masked))
-    citation_headings = [match for match in headings if match.group(1).strip().casefold() == "citations"]
-    resource = concept.metadata.get("resource")
-    resource_required = isinstance(resource, str) and bool(resource.strip())
-    external_before = [
-        target for target in extract_markdown_link_targets(concept.body) if _external_target(target)
-    ]
-    if not citation_headings:
-        if resource_required or external_before:
-            result.errors.append(f"{concept.path}: DocSync profile requires a final # Citations section")
-        return
-    if len(citation_headings) > 1:
-        result.errors.append(f"{concept.path}: DocSync profile allows only one # Citations section")
-        return
-    heading = citation_headings[0]
-    if headings[-1].start() != heading.start():
-        result.errors.append(f"{concept.path}: # Citations must be the final level-one section")
-    before = concept.body[: heading.start()]
-    section = concept.body[heading.end() :]
-    entries: list[tuple[int, str]] = []
-    for line in section.splitlines():
-        match = re.match(r"^\s*\[(\d+)\]\s+(.+?)\s*$", line)
-        if match:
-            targets = extract_markdown_link_targets(
-                match.group(2),
-                reference_definitions=reference_definitions,
-            )
-            if not targets:
-                result.errors.append(f"{concept.path}: citation [{match.group(1)}] requires a link")
-            else:
-                entries.append((int(match.group(1)), targets[0]))
-    if not entries:
-        result.errors.append(f"{concept.path}: # Citations must contain numbered link entries")
-        return
-    numbers = [number for number, _ in entries]
-    if numbers != list(range(1, len(entries) + 1)):
-        result.errors.append(f"{concept.path}: citation numbers must be consecutive from [1]")
-    citation_targets = [target for _, target in entries]
-    if resource_required and citation_targets[0] != resource.strip():
-        result.errors.append(f"{concept.path}: citation [1] must match frontmatter resource")
-    for target in extract_markdown_link_targets(before):
-        if _external_target(target) and target not in citation_targets:
-            result.errors.append(f"{concept.path}: external link is missing from # Citations: {target}")
-
-
 def validate_doc_sync_profile(
     bundle_root: Path,
     concepts: list[ConceptDocument],
@@ -925,9 +1130,11 @@ def validate_doc_sync_profile(
         if not (bundle_root / reserved_name).is_file():
             result.errors.append(f"{bundle_root}: DocSync profile requires root {reserved_name}")
     version = root_index_metadata.get("okf_version") if root_index_metadata else None
-    if version not in SUPPORTED_OKF_VERSIONS:
+    version = version.strip() if isinstance(version, str) else None
+    if version != CURRENT_OKF_VERSION:
+        notice = f"; {_version_notice(version)}" if version else ""
         result.errors.append(
-            f'{bundle_root}: DocSync profile requires root okf_version: "{LEGACY_OKF_VERSION}" or "{CURRENT_OKF_VERSION}"'
+            f'{bundle_root}: DocSync profile requires root okf_version: "{CURRENT_OKF_VERSION}"{notice}'
         )
 
     for concept in concepts:
@@ -940,14 +1147,9 @@ def validate_doc_sync_profile(
         description = concept.metadata.get("description")
         if isinstance(description, str) and "\n" in description:
             result.errors.append(f"{concept.path}: DocSync profile description must be one line")
-        if version == LEGACY_OKF_VERSION:
-            if not _valid_legacy_timestamp(concept.metadata.get("timestamp"), concept.frontmatter):
-                result.errors.append(
-                    f"{concept.path}: DocSync profile requires a timezone-aware ISO 8601 timestamp"
-                )
-            _validate_citations(concept, result)
-        elif version == CURRENT_OKF_VERSION:
-            validate_v02_metadata(concept, bundle_root, result, profile=True, strict_links=True)
+        validate_concept_metadata(
+            concept, bundle_root, result, profile=True, strict_links=True, declared_version=version
+        )
 
     has_coverage_manifest = any(
         _normalized_type(concept.metadata.get("type")) == "coverage manifest"
@@ -976,7 +1178,15 @@ def validate_bundle(
     if not bundle_root.is_dir():
         result.errors.append(f"{bundle_root}: bundle directory does not exist")
         return result
-    markdown_files = sorted(bundle_root.rglob("*.md"))
+    declared_version = read_declared_version(bundle_root)
+    resolved_root = bundle_root.resolve(strict=False)
+    # Section 3.2: dot-paths and files outside the bundle root are not part of the bundle.
+    markdown_files = [
+        path
+        for path in sorted(bundle_root.rglob("*.md"))
+        if not any(part.startswith(".") for part in path.relative_to(bundle_root).parts)
+        and path.resolve(strict=False).is_relative_to(resolved_root)
+    ]
     if not markdown_files:
         result.errors.append(f"{bundle_root}: bundle contains no Markdown files")
         return result
@@ -988,34 +1198,24 @@ def validate_bundle(
     for path in markdown_files:
         if path.name == "index.md":
             index_paths.append(path)
-            metadata = validate_index(path, bundle_root, result)
+            metadata = validate_index(path, bundle_root, result, profile_enabled)
             if path.parent == bundle_root:
                 root_index_metadata = metadata
         elif path.name == "log.md":
             validate_log(path, result)
         else:
-            concept = validate_concept(path, result)
+            concept = validate_concept(path, result, profile_enabled)
             if concept is not None:
                 concepts.append(concept)
         validate_links(path, bundle_root, result, strict_links or profile_enabled)
-    version = root_index_metadata.get("okf_version") if root_index_metadata else None
-    if version == CURRENT_OKF_VERSION and not profile_enabled:
-        for concept in concepts:
-            validate_v02_metadata(
-                concept,
-                bundle_root,
-                result,
-                profile=profile_enabled,
-                strict_links=strict_links or profile_enabled,
-            )
     if profile_enabled:
-        validate_doc_sync_profile(
-            bundle_root,
-            concepts,
-            index_paths,
-            root_index_metadata,
-            result,
-        )
+        validate_doc_sync_profile(bundle_root, concepts, index_paths, root_index_metadata, result)
+    else:
+        for concept in concepts:
+            validate_concept_metadata(
+                concept, bundle_root, result, profile=False, strict_links=strict_links,
+                declared_version=declared_version,
+            )
     return result
 
 
@@ -1030,7 +1230,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--doc-sync-profile",
         action="store_true",
-        help="apply the stricter DocSync v0.1/v0.2 producer completion profile",
+        help=f"apply the stricter DocSync OKF v{CURRENT_OKF_VERSION} producer completion profile",
     )
     parser.add_argument(
         "--require-doc-sync-spine",

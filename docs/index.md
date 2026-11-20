@@ -5,6 +5,6 @@
 - [Host compatibility](host-compatibility.md) — host-neutral skill contract, per-host installation, and agent instruction files.
 - [Maintenance standard](../skills/doc-sync/references/doc-maintenance.md) — cited rules for complete, non-duplicated documentation.
 - [Delegated execution](../skills/doc-sync/references/delegation.md) — host policy, optional setup, saved choices, and review of delegated work.
-- [OKF v0.2 producer reference](../skills/doc-sync/references/okf-v0.2.md) — default for new bundles and coordinated migration.
-- [OKF v0.1 compatibility](../skills/doc-sync/references/okf-v0.1.md) — existing pinned bundles.
+- [OKF reference](../skills/doc-sync/references/okf.md) — the maintained OKF version (v0.3) and the DocSync producer profile.
+- [OKF migration guide](../skills/doc-sync/references/okf-migration.md) — upgrading v0.1 and v0.2 bundles.
 - [OKF bundle](../okf/index.md) — progressive-disclosure project knowledge.

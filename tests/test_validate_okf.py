@@ -46,7 +46,7 @@ class ValidateOkfTests(unittest.TestCase):
     def write_doc_sync_bundle(self, root: Path) -> Path:
         (root / "concepts").mkdir(parents=True, exist_ok=True)
         (root / "index.md").write_text(
-            '---\nokf_version: "0.1"\n---\n\n'
+            '---\nokf_version: "0.3"\n---\n\n'
             "# Index\n\n* [Coverage](concepts/coverage.md) - Coverage map.\n",
             encoding="utf-8",
         )
@@ -60,7 +60,7 @@ class ValidateOkfTests(unittest.TestCase):
             "type: Coverage Manifest\n"
             "title: Coverage\n"
             "description: Maps maintained project knowledge.\n"
-            "timestamp: 2026-07-16T09:00:00+08:00\n"
+            "generated: { by: 'process:doc-sync', at: '2026-07-16T09:00:00+08:00' }\n"
             "extension_key: preserved\n"
             "---\n\n"
             "# Coverage\n",
@@ -89,14 +89,19 @@ class ValidateOkfTests(unittest.TestCase):
             completed = self.run_validator(root, "--require-doc-sync-spine")
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_concept_requires_type(self) -> None:
+    def test_markdown_without_type_is_not_a_concept(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            concept = self.write_minimal_conformant_bundle(root)
-            concept.write_text("---\ntitle: Missing type\n---\n\n# Thing\n", encoding="utf-8")
-            completed = self.run_validator(root)
-            self.assertEqual(completed.returncode, 1)
-            self.assertIn("non-empty string 'type'", completed.stderr)
+            self.write_doc_sync_bundle(root)
+            (root / "concepts" / "untyped.md").write_text(
+                "---\ntitle: Missing type\n---\n\n# Thing\n", encoding="utf-8"
+            )
+            consumer = self.run_validator(root)
+            profile = self.run_validator(root, "--doc-sync-profile")
+            self.assertEqual(consumer.returncode, 0, consumer.stderr)
+            self.assertIn("not an OKF concept", consumer.stderr)
+            self.assertEqual(profile.returncode, 1)
+            self.assertIn("non-empty string 'type'", profile.stderr)
 
     def test_broken_link_is_warning_unless_strict_or_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -131,7 +136,7 @@ class ValidateOkfTests(unittest.TestCase):
             root = Path(temp_dir)
             self.write_doc_sync_bundle(root)
             (root / "concepts" / "index.md").write_text(
-                '---\nokf_version: "0.1"\n---\n\n# Concepts\n\n* [Coverage](coverage.md)\n',
+                '---\nokf_version: "0.3"\n---\n\n# Concepts\n\n* [Coverage](coverage.md)\n',
                 encoding="utf-8",
             )
             completed = self.run_validator(root)
@@ -193,7 +198,7 @@ class ValidateOkfTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             self.assertIn("requires root index.md", completed.stderr)
             self.assertIn("requires root log.md", completed.stderr)
-            self.assertIn('requires root okf_version: "0.1"', completed.stderr)
+            self.assertIn('requires root okf_version: "0.3"', completed.stderr)
             self.assertIn("type 'Coverage Manifest'", completed.stderr)
 
     def test_root_index_version_must_be_a_string(self) -> None:
@@ -201,31 +206,31 @@ class ValidateOkfTests(unittest.TestCase):
             root = Path(temp_dir)
             self.write_doc_sync_bundle(root)
             (root / "index.md").write_text(
-                "---\nokf_version: 0.1\n---\n\n# Index\n\n* [Coverage](concepts/coverage.md)\n",
+                "---\nokf_version: 0.3\n---\n\n# Index\n\n* [Coverage](concepts/coverage.md)\n",
                 encoding="utf-8",
             )
             completed = self.run_validator(root)
             self.assertEqual(completed.returncode, 1)
-            self.assertIn("non-empty okf_version", completed.stderr)
+            self.assertIn("okf_version must be a non-empty quoted string", completed.stderr)
 
     def test_unknown_version_warns_generically_and_fails_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             self.write_doc_sync_bundle(root)
             index = root / "index.md"
-            index.write_text(index.read_text(encoding="utf-8").replace('"0.1"', '"9.9"'), encoding="utf-8")
+            index.write_text(index.read_text(encoding="utf-8").replace('"0.3"', '"9.9"'), encoding="utf-8")
             generic = self.run_validator(root)
             profile = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(generic.returncode, 0, generic.stderr)
             self.assertIn("unknown OKF version '9.9'", generic.stderr)
             self.assertEqual(profile.returncode, 1)
-            self.assertIn('requires root okf_version: "0.1"', profile.stderr)
+            self.assertIn('requires root okf_version: "0.3"', profile.stderr)
 
     def test_profile_requires_recommended_metadata(self) -> None:
         replacements = {
             "title": "title: Coverage\n",
             "description": "description: Maps maintained project knowledge.\n",
-            "timestamp": "timestamp: 2026-07-16T09:00:00+08:00\n",
+            "generated": "generated: { by: 'process:doc-sync', at: '2026-07-16T09:00:00+08:00' }\n",
         }
         for field_name, source_line in replacements.items():
             with self.subTest(field=field_name), tempfile.TemporaryDirectory() as temp_dir:
@@ -281,7 +286,7 @@ class ValidateOkfTests(unittest.TestCase):
                 "type: Unregistered Type\n"
                 "title: Orphan\n"
                 "description: A deliberately orphaned concept.\n"
-                "timestamp: 2026-07-16T09:00:00Z\n"
+                "generated: { by: 'process:doc-sync', at: '2026-07-16T09:00:00Z' }\n"
                 "unknown: preserved\n"
                 "---\n\n# Orphan\n",
                 encoding="utf-8",
@@ -300,7 +305,7 @@ class ValidateOkfTests(unittest.TestCase):
             root = Path(temp_dir)
             self.write_doc_sync_bundle(root)
             (root / "index.md").write_text(
-                '---\nokf_version: "0.1"\n---\n\n# Index\n\n* [Concepts](concepts/index.md) - Concepts.\n',
+                '---\nokf_version: "0.3"\n---\n\n# Index\n\n* [Concepts](concepts/index.md) - Concepts.\n',
                 encoding="utf-8",
             )
             (root / "concepts" / "index.md").write_text(
@@ -315,66 +320,13 @@ class ValidateOkfTests(unittest.TestCase):
             root = Path(temp_dir)
             self.write_doc_sync_bundle(root)
             (root / "index.md").write_text(
-                '---\nokf_version: "0.1"\n---\n\n'
+                '---\nokf_version: "0.3"\n---\n\n'
                 "# Index\n\n* Knowledge\n"
                 "    * [Coverage](concepts/coverage.md) - Coverage map.\n",
                 encoding="utf-8",
             )
             completed = self.run_validator(root, "--doc-sync-profile")
             self.assertEqual(completed.returncode, 0, completed.stderr)
-
-    def test_profile_validates_resource_first_citations(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            concept = self.write_doc_sync_bundle(root)
-            text = concept.read_text(encoding="utf-8").replace(
-                "extension_key: preserved",
-                "resource: https://example.com/source\nextension_key: preserved",
-            )
-            concept.write_text(text, encoding="utf-8")
-            missing = self.run_validator(root, "--doc-sync-profile")
-            self.assertEqual(missing.returncode, 1)
-            self.assertIn("final # Citations", missing.stderr)
-            concept.write_text(
-                text + "\n# Citations\n\n[1] [Source](https://example.com/source)\n",
-                encoding="utf-8",
-            )
-            valid = self.run_validator(root, "--doc-sync-profile")
-            self.assertEqual(valid.returncode, 0, valid.stderr)
-
-    def test_profile_accepts_reference_style_citation_with_document_definition(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            concept = self.write_doc_sync_bundle(root)
-            text = concept.read_text(encoding="utf-8").replace(
-                "extension_key: preserved",
-                "resource: https://example.com/source\nextension_key: preserved",
-            )
-            concept.write_text(
-                text
-                + "\n# Citations\n\n[1] [Source][source]\n\n"
-                + "[source]: https://example.com/source\n",
-                encoding="utf-8",
-            )
-            completed = self.run_validator(root, "--doc-sync-profile")
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-
-    def test_profile_rejects_bad_citation_structure_and_uncited_external_link(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            concept = self.write_doc_sync_bundle(root)
-            concept.write_text(
-                concept.read_text(encoding="utf-8")
-                + "\n[External](https://example.com/uncited)\n"
-                + "\n# Citations\n\n[2] [Other](https://example.com/other)\n"
-                + "\n# Later\n",
-                encoding="utf-8",
-            )
-            completed = self.run_validator(root, "--doc-sync-profile")
-            self.assertEqual(completed.returncode, 1)
-            self.assertIn("final level-one section", completed.stderr)
-            self.assertIn("consecutive from [1]", completed.stderr)
-            self.assertIn("missing from # Citations", completed.stderr)
 
     def test_markdown_scanner_handles_inline_reference_and_code_boundaries(self) -> None:
         text = r"""
@@ -431,7 +383,7 @@ class ValidateOkfTests(unittest.TestCase):
                 "title: Extension Concept\n"
                 "description: A one-line extension concept.\n"
                 "type: Vendor Specific Concept\n"
-                "timestamp: 2026-07-16T10:30:46Z\n"
+                "generated: { by: 'process:doc-sync', at: '2026-07-16T10:30:46Z' }\n"
                 "x-vendor-field: preserved\n"
                 "---\n\n# Extension Concept\n",
                 encoding="utf-8",

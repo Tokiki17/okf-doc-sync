@@ -5,7 +5,7 @@ description: Defines how the canonical skill is installed, compared, tested, and
 tags: [installation, validation, codex]
 generated:
   by: process:doc-sync
-  at: 2026-11-01T19:15:09+08:00
+  at: 2026-11-20T15:26:48+09:00
 sources:
   - id: installer
     resource: ../../../scripts/install.py
@@ -23,7 +23,7 @@ The working default remains the configured Codex home's `skills/doc-sync`; `--ho
 
 # Gates
 
-- Unit tests separate permissive OKF conformance from the v0.1/v0.2 DocSync profiles and cover version dispatch, metadata, structured sources, coverage, index reachability, citation/footnote handling, maintained links, UTF-8, bundle-root containment, repository validation, and installation failures.
+- Unit tests separate permissive OKF conformance from the v0.3 DocSync profile and cover migration reporting for v0.1/v0.2 bundles, root bundle metadata, untyped and dot-path files, RFC 3339 date-only timestamps, blank and single-item values, actor schemes, `superseded_by`, path-field resolution and the legacy root fallback, Attested Computation contracts, duplicate keys, metadata, structured sources, coverage, index reachability, citation/footnote handling, maintained links, UTF-8, bundle-root containment, repository validation, and installation failures.
 - Repository validation checks required files, parses Skill and UI metadata as YAML, verifies maintained links outside `okf/`, and checks both worktree and staged whitespace. It delegates bundle structure and links to `--doc-sync-profile`, preserving file-relative links to authoritative repository docs and bundle-root-absolute OKF links.
 - Installation validates the canonical skill metadata before replacing the installed mirror.
 - CI runs the full validation on Linux and the unit tests on Windows and macOS; tests that redirect the user home set both `HOME` and `USERPROFILE`.

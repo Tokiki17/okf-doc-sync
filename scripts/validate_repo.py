@@ -40,8 +40,8 @@ REQUIRED_FILES = [
     "skills/doc-sync/SKILL.md",
     "skills/doc-sync/agents/openai.yaml",
     "skills/doc-sync/references/doc-maintenance.md",
-    "skills/doc-sync/references/okf-v0.1.md",
-    "skills/doc-sync/references/okf-v0.2.md",
+    "skills/doc-sync/references/okf.md",
+    "skills/doc-sync/references/okf-migration.md",
     "skills/doc-sync/scripts/validate_okf.py",
 ]
 

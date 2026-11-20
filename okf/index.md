@@ -1,5 +1,8 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
+title: okf-doc-sync knowledge
+description: Project knowledge for the doc-sync skill, its OKF validator, installation, and governance.
+license: MIT
 ---
 
 # okf-doc-sync knowledge bundle

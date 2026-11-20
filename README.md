@@ -3,7 +3,7 @@
 `okf-doc-sync` (DocSync) is the canonical repository for `doc-sync`, a host-neutral [Agent Skill](https://agentskills.io/specification) that any agent harness, model, or person can use. The skill combines two completion gates:
 
 1. synchronize authoritative living documentation, including agent instruction files, after meaning changes, without omissions or duplicated sources, following a [maintenance standard](skills/doc-sync/references/doc-maintenance.md) distilled from model, harness, and industry guidance; and
-2. maintain an [Open Knowledge Format (OKF)](https://github.com/GoogleCloudPlatform/open-knowledge-format) knowledge bundle by default, using v0.2 for new bundles and preserving existing version pins.
+2. maintain an [Open Knowledge Format (OKF)](https://github.com/open-knowledge-format/open-knowledge-format) knowledge bundle by default. It maintains only the current OKF version (v0.3) and upgrades older bundles with a compact migration guide.
 
 Projects no longer need to opt into OKF manually. During durable initialization or authorized governance repair, `doc-sync` establishes the minimal OKF governance spine while keeping project living docs authoritative. Local synchronization updates affected facts and navigation; valid entrypoints and unrelated coverage rows need no rewrite. Pre-existing governance defects outside the authorized scope are reported with their validation impact.
 
@@ -26,7 +26,7 @@ Then ask your agent to sync the project's docs after a change, or invoke the ski
 - `scripts/validate_repo.py` — validates this repository's structure, links, skill metadata, and OKF bundle.
 - `tests/` — regression tests for installation, repository validation, Markdown link parsing, and OKF/DocSync profile behavior.
 - `docs/` — authoritative architecture and maintenance documentation.
-- `okf/` — this project's own OKF v0.2 knowledge bundle.
+- `okf/` — this project's own OKF v0.3 knowledge bundle.
 
 ## Install
 
@@ -63,7 +63,7 @@ python3 -m venv .venv  # Use Python 3.10+ for this command.
 git diff --check
 ```
 
-The upstream OKF conformance model deliberately tolerates broken links, missing optional navigation files, unknown versions, and unknown extensions when consuming bundles. `--doc-sync-profile` selects the stricter profile from root `okf_version`: v0.1 retains `timestamp` and numbered citations; v0.2 uses `generated` and structured `sources`. Both profiles require coverage, index reachability, metadata, and strict maintained links. See the [v0.2 reference](skills/doc-sync/references/okf-v0.2.md) and [v0.1 compatibility policy](skills/doc-sync/references/okf-v0.1.md).
+The upstream OKF conformance model deliberately tolerates broken links, missing optional navigation files, unknown versions, and unknown extensions when consuming bundles. `--doc-sync-profile` applies the stricter v0.3 producer profile: coverage, index reachability, title/description, `generated`, structured `sources`, and strict maintained links and path fields. Older bundles are still read; the profile reports their declared version and remaining work as migration. See the [OKF reference](skills/doc-sync/references/okf.md) and the [migration guide](skills/doc-sync/references/okf-migration.md).
 
 ## Contributing and releases
 
