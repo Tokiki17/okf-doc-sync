@@ -47,7 +47,7 @@ python3 scripts/install.py --host claude --check
 
 ### Optional delegated execution
 
-When an agent installs the skill, it then runs the setup in [delegated execution](skills/doc-sync/references/delegation.md); otherwise setup runs at the first doc-sync run on that host. The agent reads the models the current host offers, recommends one, and asks you to choose, including running doc-sync in the main session. It then proposes a rule for your user-level agent instructions and narrow exceptions for conflicting rules, shown as a diff, and edits nothing until you approve. It asks again only when your chosen model disappears or a better-ranked option appears.
+Ordinary installation and synchronization use your existing session or host delegation policy. Without a policy or an available route, the agent completes the work in the main session. Request [delegation setup](skills/doc-sync/references/delegation.md) to choose and persist a model or change when to reconfirm it.
 
 Without skill support, follow [`SKILL.md`](skills/doc-sync/SKILL.md) directly and run `python3 skills/doc-sync/scripts/validate_okf.py <project>/okf --doc-sync-profile`.
 
