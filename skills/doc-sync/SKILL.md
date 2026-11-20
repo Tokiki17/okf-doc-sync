@@ -21,6 +21,7 @@ Keep authoritative living documentation and its Open Knowledge Format (OKF) bund
 - Existing bundles keep their declared version and project pins. For v0.1, read [the v0.1 compatibility reference](references/okf-v0.1.md). Do not mix profiles or change `okf_version` as a shortcut to pass validation.
 - For an undeclared legacy bundle, infer its format from governance and maintained fields; preserve a v0.1 contract when present. Record the selected version before applying its producer rules.
 - Migrate an existing bundle only when migration is in scope and its consumers are compatible. Update metadata, provenance, governance, validator usage, and navigation together. Unknown versions remain readable with a reported producer-validation gap.
+- After an agent installs this skill, when no delegation choice is recorded for the host, or before running this work in a delegated agent, read [delegated execution](references/delegation.md). It covers setup with the user's confirmation, the recommended capability tier, choosing a model from the current host's evidence, when to ask again, and what the main session still verifies.
 - Resolve this skill's directory from the host (skill listing, loader message, or install path) and expand aliases before running scripts. Do not assume a fixed home directory, copy path, or unavailable tool.
 
 ## Synchronization workflow

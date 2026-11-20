@@ -5,7 +5,7 @@ description: Defines the host-neutral skill contract, per-host installation, and
 tags: [portability, agent-skills, installation]
 generated:
   by: process:doc-sync
-  at: 2026-10-09T14:58:36+08:00
+  at: 2026-11-20T11:57:33+09:00
 sources:
   - id: policy
     resource: ../../../docs/host-compatibility.md
@@ -17,11 +17,15 @@ sources:
     resource: https://code.claude.com/docs/en/skills
   - id: codex-skills
     resource: https://learn.chatgpt.com/docs/build-skills
+  - id: delegation
+    resource: ../../../skills/doc-sync/references/delegation.md
 ---
 
 # Current policy
 
 The [host compatibility policy](../../../docs/host-compatibility.md) keeps one Agent Skills tree with only `name` and `description` frontmatter, the key set accepted by the specification, Codex's skill-creator validator, and the claude.ai/API upload validator. The body names no host tools, models, or fixed paths. `agents/openai.yaml` remains optional Codex metadata.
+
+Delegated execution is optional and host-neutral: the [delegation reference](../../../skills/doc-sync/references/delegation.md) states a capability tier, not a model. At run time the agent reads the current host's exposed options, official documentation, and open-source code, recommends an option, and records the user's explicit choice with the offered option list. Setup, run after an agent installs the skill or at first use, also proposes a user-approved delegation rule for the host's user-level instructions and narrow exceptions for conflicting rules. It asks again only when the chosen option disappears or a better-ranked option appears. The repository ships no per-host model adapter.
 
 `scripts/install.py` installs the same tree with `--host codex`, `agents`, or `claude`, or any `--target`, and checks parity per target. Shared project rules stay in `AGENTS.md`; host files such as `CLAUDE.md` import it and add only host-specific rules.
 

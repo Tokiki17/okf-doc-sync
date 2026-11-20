@@ -28,6 +28,7 @@ sources:
 | Format interpretation | [OKF v0.2 reference](../../../skills/doc-sync/references/okf-v0.2.md) and [v0.1 compatibility](../../../skills/doc-sync/references/okf-v0.1.md) | [Skill contract](../engineering/skill-contract.md) | Current active |
 | Markdown and profile validation | [`validate_okf.py`](../../../skills/doc-sync/scripts/validate_okf.py) | [Installation and validation](../engineering/install-and-validation.md) | Current active |
 | Host portability and installation | [Host compatibility](../../../docs/host-compatibility.md) | [Host compatibility](../engineering/host-compatibility.md) | Current active policy |
+| Delegated execution | [Delegation reference](../../../skills/doc-sync/references/delegation.md) | [Host compatibility](../engineering/host-compatibility.md) | Current active guidance; sources checked 2026-11-20; not forward-tested on a host |
 | Documentation maintenance rules | [Maintenance standard](../../../skills/doc-sync/references/doc-maintenance.md) | [Skill contract](../engineering/skill-contract.md) | Current active; sources checked 2026-10-09 |
 
 # Coverage boundaries
