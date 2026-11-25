@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import importlib.util
-import os
+import io
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +31,8 @@ class ProjectTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.validator = load_validator()
         self._temp = tempfile.TemporaryDirectory()
-        self.root = Path(self._temp.name)
+        self.root = Path(self._temp.name).resolve() / "project"
+        self.root.mkdir()
 
     def tearDown(self) -> None:
         self._temp.cleanup()
@@ -92,10 +98,49 @@ class ReachabilityTests(ProjectTestCase):
 
     def test_historical_dir_is_exempt(self) -> None:
         self.write("AGENTS.md", "# Agents\n")
-        self.write("docs/history/2024.md", "[Gone](gone.md) and `docs/gone.py`\n")
-        report = self.validate(strict=True, historical_dirs=["docs/history"])
+        for directory in ("docs/cli", "docs/History", "docs/superpowers/plans", "docs/archive"):
+            self.write(f"{directory}/record.md", "[Gone](gone.md) and `docs/gone.py`\n")
+        report = self.validate(strict=True, historical_dirs=["docs/cli"])
         self.assertEqual(report.errors, [])
         self.assertEqual(report.warnings, [])
+
+    def test_only_entrypoint_comments_outside_code_declare_historical_dirs(self) -> None:
+        self.write(
+            "AGENTS.md",
+            "<!-- A plain comment with an unmatched backtick ` -->\n"
+            "<!-- DOC-SYNC: Historical-Dirs = custom\\logs/, docs/declared docs/more -->\n\n"
+            "<!-- doc-sync: historical-dir /docs/absolute ../docs/escape -->\n\n"
+            "Example of an opener: `<!--`.\n\n"
+            "```md\n<!-- doc-sync: historical-dir docs/fenced -->\n```\n\n"
+            "    <!-- doc-sync: historical-dir docs/indented -->\n\n"
+            "Example: `<!-- doc-sync: historical-dir docs/inline -->`.\n\n"
+            "\\<!-- doc-sync: historical-dir docs/escaped -->\n\n"
+            ">     <!-- doc-sync: historical-dir docs/quoted-indent -->\n\n"
+            "> ~~~md\n> <!-- doc-sync: historical-dir docs/quoted-fence -->\n> ~~~\n\n"
+            "- ```md\n  <!-- doc-sync: historical-dir docs/list-fence -->\n  ```\n\n"
+            "# Heading\n    <!-- doc-sync: historical-dir docs/after-heading -->\n",
+        )
+        self.write("CLAUDE.md", "@AGENTS.md\n\n<!-- doc-sync: historical-dir docs/imported -->\n")
+        self.write("README.md", "<!-- doc-sync: historical-dir docs/readme -->\n")
+        for directory in ("custom/logs", "docs/declared", "docs/more", "docs/imported", "docs/cli"):
+            self.write(f"{directory}/record.md", "[Gone](gone.md)\n")
+        living = (
+            "absolute", "after-heading", "escape", "escaped", "fenced", "indented",
+            "inline", "list-fence", "quoted-fence", "quoted-indent", "readme",
+        )
+        for name in living:
+            self.write(f"docs/{name}/record.md", "# Living\n")
+        report = self.validate(strict=True, historical_dirs=["docs/cli"])
+        self.assertEqual(
+            report.errors,
+            [f"docs/{name}/record.md: not reachable from AGENTS.md, CLAUDE.md" for name in living],
+        )
+        self.assertEqual(report.warnings, [])
+
+    def test_fallback_readme_can_declare_historical_dirs(self) -> None:
+        self.write("README.md", "<!-- doc-sync: historical-dir custom/logs -->\n")
+        self.write("custom/logs/record.md", "[Gone](gone.md)\n")
+        self.assertEqual(self.validate(strict=True).errors, [])
 
 
 class LinkAndPathTests(ProjectTestCase):
@@ -109,14 +154,58 @@ class LinkAndPathTests(ProjectTestCase):
             "Ignored: `python3 scripts/tool.py --check`, `unknown/dir/file.py`, `owner/repo`.\n",
         )
         self.write("docs/sub/notes.txt", "")
-        errors = self.validate(strict=True).errors
-        self.assertEqual(
-            errors,
-            [
-                "docs/sub/guide.md:2: code path 'scripts/missing.py' does not exist",
-                "docs/sub/guide.md:2: code path './absent.txt' does not exist",
-            ],
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                report = self.validate(strict=strict)
+                self.assertEqual(report.errors, [])
+                self.assertEqual(
+                    report.warnings,
+                    [
+                        "docs/sub/guide.md:2: code path 'scripts/missing.py' does not exist",
+                        "docs/sub/guide.md:2: code path './absent.txt' does not exist",
+                    ],
+                )
+
+    def test_document_relative_code_paths_can_fall_back_to_root(self) -> None:
+        self.write("AGENTS.md", "[Guide](docs/sub/guide.md)\n")
+        self.write("scripts/tool.py")
+        self.write("../sibling/file.txt")
+        self.write(
+            "docs/sub/guide.md",
+            "Use `./scripts/tool.py` and `../sibling/file.txt`.\n"
+            "[Guide](./scripts/tool.py)\n",
         )
+        report = self.validate(strict=True)
+        self.assertEqual(report.errors, ["docs/sub/guide.md:2: broken link './scripts/tool.py' (does not exist)"])
+        self.assertEqual(report.warnings, [])
+        public = self.validate(strict=True, check_private_paths=True)
+        self.assertEqual(public.errors, report.errors)
+        self.assertEqual(len(public.warnings), 1, public.warnings)
+        self.assertIn("escapes the project root", public.warnings[0])
+
+    def test_strict_cli_exits_successfully_with_code_path_warnings(self) -> None:
+        self.write("AGENTS.md", "Run `./missing.py`.\n")
+        with redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(self.validator.main([str(self.root), "--strict"]), 0)
+        self.assertIn("WARNING:", stdout.getvalue())
+
+    def test_root_code_path_tries_enclosing_subpackage(self) -> None:
+        self.write("scripts/tool.py")
+        self.write("subpkg/scripts/local.py")
+        self.write("subpkg/references/ops.md", "Use `scripts/local.py`.\n")
+        self.assertEqual(self.validate().warnings, [])
+        self.assertEqual(self.validate().errors, [])
+
+    def test_artifact_and_placeholder_code_paths_are_ignored(self) -> None:
+        self.write("tests/example.py")
+        self.write(
+            "AGENTS.md",
+            "`tests/subpkg/TestResults/run.trx` `tests/NNN/file.md` `tests/NNN-example.md`\n"
+            "`tests/XXX/example.py` `tests/YYYY/example.py` `tests/.../example.py`\n",
+        )
+        report = self.validate(strict=True)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.warnings, [])
 
     def test_heading_anchor_keeps_inline_code_text(self) -> None:
         self.write(
@@ -195,11 +284,15 @@ class LinkAndPathTests(ProjectTestCase):
             "docs/front.md",
             "---\n# comment\ntitle: Front\nrelated: [x](missing-front.md)\ntags:\n  - a\n---\n\n# Front\n",
         )
-        errors = self.validate().errors
-        self.assertEqual(len(errors), 3, errors)
-        self.assertIn("AGENTS.md:5: broken link 'missing-break.md' (does not exist)", errors)
-        self.assertIn("AGENTS.md:5: code path 'scripts/missing.py' does not exist", errors)
-        self.assertIn("docs/dots.md:3: broken link 'missing-dots.md' (does not exist)", errors)
+        report = self.validate()
+        self.assertEqual(
+            report.errors,
+            [
+                "AGENTS.md:5: broken link 'missing-break.md' (does not exist)",
+                "docs/dots.md:3: broken link 'missing-dots.md' (does not exist)",
+            ],
+        )
+        self.assertEqual(report.warnings, ["AGENTS.md:5: code path 'scripts/missing.py' does not exist"])
 
     def test_crlf_blank_line_ends_unclosed_bracket(self) -> None:
         path = self.root / "AGENTS.md"
@@ -209,20 +302,105 @@ class LinkAndPathTests(ProjectTestCase):
             ["AGENTS.md:3: broken link 'missing-crlf.md' (does not exist)"],
         )
 
-    def test_links_must_stay_inside_the_project(self) -> None:
-        outside = Path(self._temp.name).parent / f"outside-{os.getpid()}.md"
-        outside.write_text("# Outside\n", encoding="utf-8")
-        self.addCleanup(outside.unlink)
-        self.write("AGENTS.md", f"[up](../{outside.name})\n[sym](docs/link.md)\n[abs](/docs/real.md)\n")
+    def test_sibling_links_and_imports_follow_workspace_or_public_mode(self) -> None:
+        self.write("../sibling-repo/Guide.md", '# Outside\n\n<a id="details"></a>\n')
+        self.write("AGENTS.md", "[up](../sibling-repo/Guide.md#outside)\n[abs](/docs/real.md)\n")
         self.write("docs/real.md", "# Real\n")
+        self.write("CLAUDE.md", "@AGENTS.md\n@../sibling-repo/Guide.md\n")
+        self.assertEqual(self.validate(strict=True).errors, [])
+        self.assertEqual(self.validate(strict=True).warnings, [])
+        public = self.validate(strict=True, check_private_paths=True)
+        self.assertEqual(len(public.errors), 2, public.errors)
+        self.assertTrue(all("escapes the project root" in error for error in public.errors))
+
+        self.write(
+            "AGENTS.md",
+            "[html](../sibling-repo/Guide.md#details)\n"
+            "[anchor](../sibling-repo/Guide.md#missing)\n"
+            "[target](../sibling-repo/missing.md)\n"
+            "[case](../sibling-repo/guide.md)\n",
+        )
+        self.write("CLAUDE.md", "@AGENTS.md\n@../sibling-repo/missing.md\n")
+        errors = self.validate().errors
+        self.assertEqual(len(errors), 4, errors)
+        self.assertIn("missing heading anchor", errors[0])
+        self.assertIn("does not exist", errors[1])
+        self.assertIn("guide.md", errors[2])
+        self.assertIn("broken import", errors[3])
+
+    def test_symlink_targets_outside_project_follow_workspace_or_public_mode(self) -> None:
+        outside = self.write("../sibling-repo/guide.md", "# Outside\n")
+        self.write("AGENTS.md", "[sym](docs/link.md#outside)\n")
+        (self.root / "docs").mkdir()
         try:
             (self.root / "docs" / "link.md").symlink_to(outside)
         except (OSError, NotImplementedError):
             self.skipTest("symlinks unavailable")
-        errors = self.validate().errors
-        self.assertEqual(len(errors), 2, errors)
+        self.assertEqual(self.validate(strict=True).errors, [])
+        errors = self.validate(strict=True, check_private_paths=True).errors
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("resolves outside the project root", errors[0])
+        self.write("AGENTS.md", "[sym](docs/link.md#missing)\n")
+        self.assertIn("missing heading anchor", self.validate().errors[0])
+
+    def test_parent_segment_after_symlink_checks_the_actual_target(self) -> None:
+        self.write("guide.md", "# Local\n")
+        self.write("../sibling-repo/guide.md", "# External\n")
+        outside = self.write("../sibling-repo/subpkg/notes.txt")
+        try:
+            (self.root / "subpkg").symlink_to(outside.parent, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        self.write("AGENTS.md", "[guide](subpkg/../guide.md#external)\n")
+        report = self.validate(strict=True)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.warnings, [])
+        errors = self.validate(check_private_paths=True).errors
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("resolves outside the project root", errors[0])
+
+    def test_public_path_boundaries_also_apply_to_historical_documents(self) -> None:
+        self.write("../sibling-repo/guide.md", "# External\n")
+        self.write("docs/archive/record.md", "[stale](gone.md) [external](../../../sibling-repo/guide.md)\n")
+        self.assertEqual(self.validate(strict=True).errors, [])
+        errors = self.validate(strict=True, check_private_paths=True).errors
+        self.assertEqual(len(errors), 1, errors)
         self.assertIn("escapes the project root", errors[0])
-        self.assertIn("resolves outside the project root", errors[1])
+
+    def test_home_links_resolve_on_disk_and_are_rejected_in_public_mode(self) -> None:
+        home = self.root.parent / "synthetic-home"
+        guide = self.write("../synthetic-home/Guide.md", "# Details\n").resolve()
+        with mock.patch.object(self.validator, "HOME_PATH_PATTERN", re.compile(re.escape(home.as_posix()))):
+            self.write("AGENTS.md", f"[guide]({guide.as_posix()}#details)\n")
+            self.assertEqual(self.validate().errors, [])
+            self.assertEqual(self.validate().warnings, [])
+            self.assertTrue(any("broken link" in error for error in self.validate(check_private_paths=True).errors))
+            self.write(
+                "AGENTS.md",
+                f"[anchor]({guide.as_posix()}#missing)\n[missing]({home.as_posix()}/missing.md)\n",
+            )
+            errors = self.validate().errors
+            self.assertEqual(len(errors), 2, errors)
+            self.assertIn("missing heading anchor", errors[0])
+            self.assertIn("does not exist", errors[1])
+
+    def test_windows_home_link_is_checked_as_a_path_instead_of_a_url(self) -> None:
+        home_path = "C:/" + "Users/synthetic-user/guide.md"
+        self.write("AGENTS.md", f"[home]({home_path})\n[guide](Q:/synthetic/guide.md)\n")
+        errors = self.validate(check_private_paths=True).errors
+        self.assertTrue(any("broken link" in error and "machine-specific home path" in error for error in errors))
+        self.assertTrue(any("Q:/synthetic/guide.md" in error and "escapes the project root" in error for error in errors))
+
+    def test_home_import_is_checked_against_workspace_or_public_boundary(self) -> None:
+        home = self.write("../synthetic-home/guide.md", "# Guide\n").resolve()
+        self.write("CLAUDE.md", "@~/guide.md\n")
+        with mock.patch.object(self.validator.os.path, "expanduser", return_value=str(home)):
+            self.assertEqual(self.validate().errors, [])
+            errors = self.validate(check_private_paths=True).errors
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("escapes the project root", errors[0])
+            home.unlink()
+            self.assertIn("does not exist", self.validate().errors[0])
 
     def test_link_case_must_match_exactly(self) -> None:
         self.write("AGENTS.md", "[guide](docs/guide.md)\n")
@@ -237,6 +415,93 @@ class LinkAndPathTests(ProjectTestCase):
         self.write("ok.md", "See ~/.claude/skills and /" + "Users/<name>.\n")
         errors = self.validate(check_private_paths=True).errors
         self.assertEqual(errors, ["notes.md:1: machine-specific home path", "win.txt:1: machine-specific home path"])
+
+
+class DiscoveryTests(ProjectTestCase):
+    def test_non_git_walk_prunes_artifacts_and_hidden_directories(self) -> None:
+        self.write(
+            "AGENTS.md",
+            "[Output](outputs/report.md#report) [CI](.github/guide.md) "
+            "[Template](templates/guide.md#report)\n",
+        )
+        for relative in (
+            "output/report.md", "outputs/report.md", "tmp/report.md", ".github/guide.md", "templates/guide.md",
+        ):
+            path = self.write(relative, "# Report\n\n[Gone](gone.md)\n")
+            self.assertNotIn(path, self.validator.list_project_files(self.root))
+        report = self.validate(strict=True)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.warnings, [])
+
+
+@unittest.skipUnless(shutil.which("git"), "git unavailable")
+class GitDiscoveryTests(ProjectTestCase):
+    def git(self, *args, cwd=None) -> None:
+        subprocess.run(["git", *args], cwd=cwd or self.root, capture_output=True, check=True)
+
+    def test_nested_code_path_with_no_matching_root_directory(self) -> None:
+        self.git("init", "-q")
+        self.write("subpkg/scripts/local.py")
+        self.write("subpkg/references/ops.md", "Use `scripts/local.py` and `scripts/missing.py`.\n")
+        self.git("add", "subpkg")
+
+        report = self.validate(strict=True)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(
+            report.warnings,
+            ["subpkg/references/ops.md:1: code path 'scripts/missing.py' does not exist"],
+        )
+
+    def test_tracked_directories_only_and_batched_ignore_checks(self) -> None:
+        self.git("init", "-q")
+        self.write(".gitignore", "/docs/sub/scripts/generated.py\n/scripts/cache.db\n/scripts/generated/\n")
+        self.write("scripts/tool.py")
+        self.write("output/asset.txt")
+        self.write("scratch/asset.txt")
+        self.write("AGENTS.md", "[Guide](docs/sub/guide.md)\n`output/absent.txt` `scratch/absent.txt`\n")
+        self.git("add", "scripts/tool.py")
+        self.assertEqual(self.validator._top_level_dirs(self.root), {"scripts"})
+
+        nested = self.root / "scripts" / "subpkg"
+        nested.mkdir()
+        self.git("init", "-q", cwd=nested)
+        outside = self.write("../sibling-repo/guide.md")
+        try:
+            (self.root / "scripts" / "linked").symlink_to(outside.parent, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        self.write(
+            "docs/sub/guide.md",
+            "`scripts/generated.py` `scripts/cache.db` `scripts/generated/` `scripts/missing.py`\n"
+            "`scripts/linked/missing.py` `scripts/subpkg/missing.py`\n",
+        )
+        with mock.patch.object(self.validator.subprocess, "run", wraps=subprocess.run) as run:
+            report = self.validate(strict=True)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(len(report.warnings), 3, report.warnings)
+        for value in ("scripts/missing.py", "scripts/linked/missing.py", "scripts/subpkg/missing.py"):
+            self.assertTrue(any(f"'{value}'" in warning for warning in report.warnings), report.warnings)
+        checks = [call for call in run.call_args_list if call.args[0][:2] == ["git", "check-ignore"]]
+        self.assertEqual(len(checks), 1)
+        checked_paths = checks[0].kwargs["input"].split(b"\0")
+        self.assertNotIn(b"scripts/linked/missing.py", checked_paths)
+        self.assertNotIn(b"scripts/subpkg/missing.py", checked_paths)
+
+    def test_skipped_markdown_is_still_scanned_for_private_paths(self) -> None:
+        self.git("init", "-q")
+        self.write(
+            "AGENTS.md",
+            "[Output](outputs/report.md#report) [Hidden](.claude/report.md#report) "
+            "[Template](docs/templates/report.md#report)\n",
+        )
+        for directory in ("output", "outputs", "tmp", ".claude", "docs/vendor", "docs/templates"):
+            self.write(f"{directory}/report.md", "# Report\n\n[Gone](gone.md)\n")
+        self.write("output/report.md", "# Report\n\n[Gone](gone.md)\nSee /" + "home/synthetic-user/config.\n")
+        self.git("add", "output", ".claude", "docs/vendor", "docs/templates")
+        self.assertEqual(self.validate(strict=True).errors, [])
+        public = self.validate(strict=True, check_private_paths=True)
+        self.assertEqual(public.errors, ["output/report.md:4: machine-specific home path"])
+        self.assertEqual(public.warnings, [])
 
 
 class SkillTreeTests(unittest.TestCase):

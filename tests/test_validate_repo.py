@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 import tempfile
 import unittest
@@ -50,6 +51,16 @@ class ValidateRepoTests(unittest.TestCase):
             self.assertEqual(self.validator.git_diff_errors(), ["staged whitespace"])
         self.assertEqual(run.call_args_list[0].args[0], ["git", "diff", "--check"])
         self.assertEqual(run.call_args_list[1].args[0], ["git", "diff", "--cached", "--check"])
+
+    def test_repository_gate_fails_on_documentation_warnings(self) -> None:
+        docs = self.validator.load_docs_validator()
+        with (
+            mock.patch.object(self.validator, "load_docs_validator", return_value=docs),
+            mock.patch.object(docs, "validate_project", return_value=docs.Report(warnings=["missing code path"])),
+            mock.patch.object(self.validator.sys, "stdout", new_callable=io.StringIO) as stdout,
+        ):
+            self.assertEqual(self.validator.main(), 1)
+        self.assertEqual(stdout.getvalue(), "WARNING: missing code path\n")
 
 
 if __name__ == "__main__":

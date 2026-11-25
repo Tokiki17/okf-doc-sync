@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import ntpath
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -35,6 +37,15 @@ WALK_IGNORED_DIRS = {
     ".mypy_cache",
     ".pytest_cache",
 }
+ARTIFACT_AND_VENDOR_DIRS = {
+    "build", "dist", "out", "output", "outputs", "target", "tmp", "temp",
+    "artifacts", "coverage", "TestResults", "bin", "obj", "vendor", "third_party", "upstream", "templates",
+}
+HISTORICAL_DIR_NAMES = {"history", "historical", "archive", "archived", "superpowers"}
+HTML_COMMENT_RE = re.compile(r"<!--(.*?)-->", re.S)
+HISTORICAL_DIR_RE = re.compile(r"\s*doc-sync:\s*historical-dirs?(?:\s*=\s*|\s+)(.*)", re.I | re.S)
+PLACEHOLDER_SEGMENT_RE = re.compile(r"NNN(?:-.*)?|XXX|YYYY|\.\.\.")
+WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[/\\]")
 MAX_TEXT_BYTES = 2 * 1024 * 1024
 # Agent Skills specification and Anthropic authoring limits shared by all hosts.
 MAX_DESCRIPTION_CHARS = 1024
@@ -46,6 +57,7 @@ HOME_PATH_PATTERN = re.compile(
     r"|[A-Za-z]:(?:\\|/)+" + r"Users(?:\\|/)+[A-Za-z0-9._-]+"
 )
 LIST_MARKER_RE = re.compile(r"(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)")
+QUOTE_MARKER_RE = re.compile(r" {0,3}>[ \t]?")
 ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 REFERENCE_DEFINITION_RE = re.compile(r"^ {0,3}\[([^\]\n]+)\]:[ \t]*(.*)$")
@@ -134,8 +146,8 @@ def _frontmatter_end(lines: list[str]) -> int | None:
     return end
 
 
-def mask_blocks(text: str) -> str:
-    """Blank frontmatter, fenced and indented code blocks, and HTML comments.
+def mask_blocks(text: str, *, keep_comments: bool = False) -> str:
+    """Blank frontmatter, fenced and indented code blocks, and optionally HTML comments.
 
     Inline code is kept so heading anchors and backtick paths can be read.
     Offsets and line breaks are preserved.
@@ -152,26 +164,46 @@ def mask_blocks(text: str) -> str:
 
     fence_char: str | None = None
     fence_length = 0
+    fence_indent = 0
+    quote_depth = 0
     in_comment = False
-    in_indented_code = False
     previous_paragraph = False
     previous_blank = True
     list_indents: list[int] = []
     for line in lines[index:]:
         content = line.rstrip("\r\n")
         newline = line[len(content) :]
-        if not content.strip():
+        block_content = content
+        if keep_comments:
+            depth = 0
+            while (not (fence_char or in_comment) or depth < quote_depth) and (
+                quote := QUOTE_MARKER_RE.match(block_content)
+            ):
+                depth += 1
+                block_content = block_content[quote.end() :]
+            if depth != quote_depth:
+                quote_depth = depth
+                fence_char = None
+                in_comment = previous_paragraph = False
+                previous_blank = True
+                list_indents.clear()
+        if not block_content.strip():
             output.append(_blank_line(content) + newline)
             previous_blank = True
             previous_paragraph = False
             continue
-        columns = _leading_columns(content)
+        columns = _leading_columns(block_content)
         container = max((indent for indent in list_indents if indent <= columns), default=0)
         relative = columns - container
-        stripped = content.lstrip(" \t")
+        stripped = block_content.lstrip(" \t")
 
+        if keep_comments and fence_char and columns < fence_indent:
+            fence_char = None
         if fence_char is not None:
-            closing = re.match(r"(`{3,}|~{3,})[ \t]*$", stripped)
+            closing = (
+                re.match(r"(`{3,}|~{3,})[ \t]*$", stripped)
+                if not keep_comments or columns - fence_indent <= 3 else None
+            )
             output.append(_blank_line(content) + newline)
             if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_length:
                 fence_char = None
@@ -181,28 +213,28 @@ def mask_blocks(text: str) -> str:
 
         if in_comment:
             masked, in_comment = _mask_comments(content, True)
-            output.append(masked + newline)
+            output.append((content if keep_comments else masked) + newline)
             previous_blank = False
             previous_paragraph = False
             continue
 
-        if relative >= 4 and not previous_paragraph and (previous_blank or in_indented_code):
-            output.append(_blank_line(content) + newline)
-            in_indented_code = True
-            previous_blank = False
-            continue
-        in_indented_code = False
-
-        fence = re.match(r"(`{3,}|~{3,})(.*)$", stripped) if relative <= 3 else None
-        if fence and not (fence.group(1)[0] == "`" and "`" in fence.group(2)):
-            fence_char = fence.group(1)[0]
-            fence_length = len(fence.group(1))
+        if relative >= 4 and not previous_paragraph:
             output.append(_blank_line(content) + newline)
             previous_blank = False
-            previous_paragraph = False
             continue
 
         marker = LIST_MARKER_RE.match(stripped) if relative <= 3 else None
+        fence_source = stripped[marker.end() :] if keep_comments and marker else stripped
+        fence = re.match(r"(`{3,}|~{3,})(.*)$", fence_source) if relative <= 3 else None
+        if fence and not (fence.group(1)[0] == "`" and "`" in fence.group(2)):
+            fence_char = fence.group(1)[0]
+            fence_length = len(fence.group(1))
+            fence_indent = columns + max(marker.end(), 2) if marker else container
+            output.append(_blank_line(content) + newline)
+            previous_blank = False
+            previous_paragraph = False
+            continue
+
         if marker:
             list_indents = [indent for indent in list_indents if indent <= columns]
             list_indents.append(columns + max(marker.end(), 2))
@@ -211,9 +243,12 @@ def mask_blocks(text: str) -> str:
         elif previous_blank:
             list_indents = [indent for indent in list_indents if indent <= columns]
 
-        masked, in_comment = _mask_comments(content, False)
-        output.append(masked + newline)
-        previous_paragraph = not ATX_HEADING_RE.match(content) and not SETEXT_UNDERLINE_RE.match(content)
+        comment_source = content
+        if keep_comments and "<!--" in content and "`" in content:
+            comment_source = _mask_inline_code(content, skip_comments=True)
+        masked, in_comment = _mask_comments(comment_source, False)
+        output.append((content if keep_comments else masked) + newline)
+        previous_paragraph = not ATX_HEADING_RE.match(block_content) and not SETEXT_UNDERLINE_RE.match(block_content)
         previous_blank = False
     return "".join(output)
 
@@ -222,7 +257,7 @@ def _mask_comments(content: str, in_comment: bool) -> tuple[str, bool]:
     chars = list(content)
     index = 0
     while index < len(content):
-        if not in_comment and content.startswith("<!--", index):
+        if not in_comment and content.startswith("<!--", index) and not _is_escaped(content, index):
             in_comment = True
         if in_comment:
             if content.startswith("-->", index):
@@ -254,12 +289,18 @@ def _paragraph_segments(text: str) -> list[tuple[int, int]]:
     return segments
 
 
-def iter_code_spans(text: str) -> list[tuple[int, int, str]]:
+def iter_code_spans(text: str, *, skip_comments: bool = False) -> list[tuple[int, int, str]]:
     """Return (start, end, content) for inline code spans; spans may cross lines in a paragraph."""
     spans: list[tuple[int, int, str]] = []
+    index = 0
     for seg_start, seg_end in _paragraph_segments(text):
-        index = seg_start
+        index = max(index, seg_start)
         while index < seg_end:
+            if skip_comments and text.startswith("<!--", index) and not _is_escaped(text, index):
+                comment = HTML_COMMENT_RE.match(text, index)
+                if comment:
+                    index = comment.end()
+                    continue
             if text[index] != "`" or _is_escaped(text, index):
                 index += 1
                 continue
@@ -291,15 +332,18 @@ def iter_code_spans(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
-def mask_all_code(text: str) -> str:
-    """Blank block-level code plus inline code spans, including spans across lines."""
-    masked = mask_blocks(text)
-    chars = list(masked)
-    for start, end, _ in iter_code_spans(masked):
+def _mask_inline_code(text: str, *, skip_comments: bool = False) -> str:
+    chars = list(text)
+    for start, end, _ in iter_code_spans(text, skip_comments=skip_comments):
         for position in range(start, end):
             if chars[position] not in "\r\n":
                 chars[position] = " "
     return "".join(chars)
+
+
+def mask_all_code(text: str, *, keep_comments: bool = False) -> str:
+    """Blank block-level code plus inline code spans, including spans across lines."""
+    return _mask_inline_code(mask_blocks(text, keep_comments=keep_comments), skip_comments=keep_comments)
 
 
 def _line_of(text: str, offset: int) -> int:
@@ -552,6 +596,9 @@ def heading_anchors(text: str) -> set[str]:
 def _exact_case_exists(root: Path, parts: tuple[str, ...]) -> bool:
     current = root
     for part in parts:
+        if part == "..":
+            current /= part
+            continue
         try:
             names = os.listdir(current)
         except OSError:
@@ -566,60 +613,123 @@ def _exact_case_exists(root: Path, parts: tuple[str, ...]) -> bool:
 class ResolvedPath:
     path: Path
     problem: str | None = None
+    inside_root: bool = False
+    private_violation: bool = False
 
 
-def resolve_local(root: Path, base_dir: Path, decoded: str) -> ResolvedPath:
-    """Resolve a local path under root with lexical, real-path, and exact-case checks."""
-    root = root.absolute()
-    if decoded.startswith("/"):
+def resolve_local(
+    root: Path,
+    base_dir: Path,
+    decoded: str,
+    *,
+    check_private_paths: bool = True,
+    root_relative: bool = True,
+) -> ResolvedPath:
+    """Check a local path's lexical boundary, exact case, and resolved location."""
+    root = Path(os.path.abspath(root))
+    if not root_relative and decoded.startswith(("~/", "~\\")):
+        decoded = os.path.expanduser(decoded)
+    home_match = HOME_PATH_PATTERN.match(decoded)
+    absolute_windows = WINDOWS_ABSOLUTE_RE.match(decoded)
+    if home_match:
+        if check_private_paths:
+            return ResolvedPath(Path(decoded), "machine-specific home path", private_violation=True)
+        case_base = Path(home_match.group())
+    else:
+        case_base = root
+    if home_match or absolute_windows:
+        joined = Path(decoded)
+        if not joined.is_absolute():
+            if check_private_paths:
+                return ResolvedPath(joined, "escapes the project root", private_violation=True)
+            return ResolvedPath(joined, "does not exist")
+    elif root_relative and decoded.startswith("/"):
         joined = root / decoded.lstrip("/")
     else:
-        joined = base_dir / decoded
-    lexical = Path(os.path.normpath(joined))
+        joined = base_dir.absolute() / decoded
+    lexical = Path(os.path.abspath(joined))
+    inside_root = lexical.is_relative_to(root)
+    if check_private_paths and not inside_root:
+        return ResolvedPath(lexical, "escapes the project root", private_violation=True)
+
     try:
-        relative = os.path.relpath(lexical, root)
+        real = joined.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return ResolvedPath(lexical, "does not exist")
+    real_root = root.resolve()
+    inside_root = inside_root and real.is_relative_to(real_root)
+    if check_private_paths and not inside_root:
+        return ResolvedPath(lexical, "resolves outside the project root", private_violation=True)
+
+    try:
+        case_base = Path(os.path.commonpath([case_base, lexical, joined]))
     except ValueError:
-        # Windows: the path is on another drive than the project root.
-        return ResolvedPath(lexical, "escapes the project root")
-    if relative == ".." or relative.startswith(".." + os.sep) or os.path.isabs(relative):
-        return ResolvedPath(lexical, "escapes the project root")
-    parts = () if relative == "." else tuple(Path(relative).parts)
-    if not _exact_case_exists(root, parts):
-        if lexical.exists():
-            return ResolvedPath(lexical, "differs in letter case from the file on disk")
-        return ResolvedPath(lexical, "does not exist")
-    try:
-        real = lexical.resolve(strict=True)
-    except OSError:
-        return ResolvedPath(lexical, "does not exist")
-    if not real.is_relative_to(root.resolve()):
-        return ResolvedPath(lexical, "resolves outside the project root")
-    return ResolvedPath(lexical)
+        # A different drive has no common prefix.
+        case_base = Path(joined.anchor)
+    if not joined.is_relative_to(case_base):
+        case_base = Path(joined.anchor)
+    if not _exact_case_exists(case_base, joined.relative_to(case_base).parts):
+        return ResolvedPath(lexical, "differs in letter case from the file on disk")
+    if ".." in joined.parts:
+        # Folding a parent segment may change the destination after a symlink.
+        try:
+            same_target = lexical.samefile(real)
+        except OSError:
+            same_target = False
+        if not same_target:
+            lexical = root / real.relative_to(real_root) if inside_root else real
+    return ResolvedPath(lexical, inside_root=inside_root)
 
 
-def _top_level_dirs(root: Path) -> set[str]:
+def _local_link_target(target: str) -> tuple[str, str] | None:
+    # A Windows drive letter otherwise looks like a URL scheme.
+    path, _, fragment = target.partition("#")
+    decoded = unquote(path.partition("?")[0])
+    if HOME_PATH_PATTERN.match(decoded) or WINDOWS_ABSOLUTE_RE.match(decoded):
+        return decoded, fragment
+    parsed = urlsplit(target)
+    if parsed.scheme or parsed.netloc or target.startswith("//"):
+        return None
+    return unquote(parsed.path), parsed.fragment
+
+
+def _ignored_directory(name: str) -> bool:
+    return name.startswith(".") or name in WALK_IGNORED_DIRS or name in ARTIFACT_AND_VENDOR_DIRS
+
+
+def _direct_subdirectories(directory: Path) -> set[str]:
     try:
-        return {
-            name
-            for name in os.listdir(root)
-            if name not in WALK_IGNORED_DIRS and (root / name).is_dir()
-        }
+        with os.scandir(directory) as entries:
+            return {entry.name for entry in entries if not _ignored_directory(entry.name) and entry.is_dir()}
     except OSError:
         return set()
 
 
-def code_path_candidate(content: str, top_dirs: set[str]) -> tuple[str, str] | None:
+def _top_level_dirs(root: Path) -> set[str]:
+    tracked = _git_paths(root, "ls-files", "-z")
+    if tracked is not None:
+        names = {entry.split("/", 1)[0] for entry in tracked if "/" in entry}
+        return {name for name in names if not _ignored_directory(name)}
+    return _direct_subdirectories(root)
+
+
+def code_path_candidate(content: str, candidate_dirs: set[str]) -> tuple[str, str] | None:
     """Classify backtick text as ('root'|'doc', path) when it names a project path."""
     value = LOCATION_SUFFIX_RE.sub("", content.strip())
     if not value or not CODE_PATH_RE.fullmatch(value):
         return None
     named = [segment for segment in value.split("/") if segment not in {"", ".", ".."}]
-    if not named or not all(re.search(r"[A-Za-z0-9]", segment) for segment in named):
-        return None  # Placeholders such as `./...` name no file.
+    if not named or any(
+        segment in ARTIFACT_AND_VENDOR_DIRS
+        or PLACEHOLDER_SEGMENT_RE.fullmatch(segment)
+        or not re.search(r"[A-Za-z0-9]", segment)
+        for segment in named
+    ):
+        return None
     if value.startswith("./") or value.startswith("../"):
         return "doc", value
     first, slash, _ = value.partition("/")
-    if slash and first in top_dirs:
+    if slash and first in candidate_dirs:
         return "root", value
     return None
 
@@ -628,28 +738,31 @@ def code_path_candidate(content: str, top_dirs: set[str]) -> tuple[str, str] | N
 # File enumeration
 
 
-def list_project_files(root: Path) -> list[Path]:
-    """List files tracked or not ignored by git; fall back to a filtered walk."""
+def _git_paths(root: Path, *args: str, input: bytes | None = None) -> list[str] | None:
+    """Read a NUL-delimited Git path list, or return None when Git fails."""
     try:
         completed = subprocess.run(
-            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            ["git", *args],
             cwd=root,
+            input=input,
             capture_output=True,
             check=False,
         )
     except OSError:
-        completed = None
-    if completed is not None and completed.returncode == 0:
-        files = []
-        for entry in completed.stdout.decode("utf-8", "surrogateescape").split("\0"):
-            if entry:
-                path = root / entry
-                if path.is_file():
-                    files.append(path)
-        return sorted(set(files))
+        return None
+    if completed.returncode != 0:
+        return None
+    return [entry for entry in os.fsdecode(completed.stdout).split("\0") if entry]
+
+
+def list_project_files(root: Path) -> list[Path]:
+    """List files tracked or not ignored by git; fall back to a filtered walk."""
+    entries = _git_paths(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    if entries is not None:
+        return sorted({root / entry for entry in entries if (root / entry).is_file()})
     files = []
     for directory, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(name for name in dirnames if name not in WALK_IGNORED_DIRS)
+        dirnames[:] = sorted(name for name in dirnames if not _ignored_directory(name))
         for name in filenames:
             files.append(Path(directory) / name)
     return sorted(files)
@@ -668,6 +781,25 @@ def _read_text(path: Path) -> str | None:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+def _git_ignore_safe(root: Path, relative: Path) -> bool:
+    prefix = root
+    for part in relative.parts:
+        prefix /= part
+        if prefix.is_symlink() or (prefix / ".git").exists():
+            return False
+    return True
+
+
+def _ignored_code_paths(root: Path, warnings: list[tuple[str, set[str]]]) -> set[str]:
+    paths = {path for _, attempts in warnings for path in attempts}
+    safe = sorted(path for path in paths if _git_ignore_safe(root, Path(path)))
+    if not safe:
+        return set()
+    payload = os.fsencode("\0".join(safe) + "\0")
+    ignored = _git_paths(root, "check-ignore", "-z", "--stdin", input=payload)
+    return set(ignored or ())
 
 
 # ---------------------------------------------------------------------------
@@ -697,6 +829,30 @@ def _is_under(relative: str, directories: list[str]) -> bool:
     return any(relative == directory or relative.startswith(directory + "/") for directory in directories)
 
 
+def _historical_directories(root: Path, real_root: Path, directories: list[str] | tuple[str, ...]) -> list[str]:
+    entries = [root / name for name in ENTRY_NAMES if (root / name).is_file()]
+    declared = list(directories)
+    for entry in entries or [root / FALLBACK_ENTRY]:
+        if not entry.is_file() or not entry.resolve().is_relative_to(real_root):
+            continue
+        text = mask_all_code(_read_text(entry) or "", keep_comments=True)
+        for comment in HTML_COMMENT_RE.finditer(text):
+            if _is_escaped(text, comment.start()):
+                continue
+            match = HISTORICAL_DIR_RE.fullmatch(comment.group(1))
+            if match:
+                declared.extend(re.split(r"[,\s]+", match.group(1)))
+    normalized = []
+    for directory in declared:
+        directory = directory.replace("\\", "/")
+        if directory.startswith("/") or ntpath.splitdrive(directory)[0]:
+            continue
+        directory = posixpath.normpath(directory.strip("/"))
+        if directory not in {".", ".."} and not directory.startswith("../"):
+            normalized.append(directory)
+    return normalized
+
+
 def _imports(text: str) -> list[tuple[str, int]]:
     masked = mask_all_code(text)
     results = []
@@ -715,25 +871,46 @@ def validate_project(
     check_private_paths: bool = False,
 ) -> Report:
     report = Report()
-    root = root.absolute()
-    historical = [directory.strip("/").replace("\\", "/") for directory in historical_dirs]
+    root = Path(os.path.abspath(root))
+    real_root = root.resolve()
+    historical = _historical_directories(root, real_root, historical_dirs)
     files = list_project_files(root)
     docs: dict[Path, _Doc] = {}
     for path in files:
         if path.suffix.lower() != ".md":
             continue
-        text = _read_text(path)
-        if text is None:
+        relative = path.relative_to(root)
+        directories = relative.parts[:-1]
+        if any(_ignored_directory(part) for part in directories):
             continue
-        relative = path.relative_to(root).as_posix()
-        docs[path] = _Doc(path, relative, text, _is_under(relative, historical))
+        text = _read_text(path)
+        if text is None or not path.resolve().is_relative_to(real_root):
+            continue
+        frozen = any(part.casefold() in HISTORICAL_DIR_NAMES for part in directories)
+        frozen = frozen or _is_under(relative.parent.as_posix(), historical)
+        docs[path] = _Doc(path, relative.as_posix(), text, frozen)
 
     top_dirs = _top_level_dirs(root)
+    child_dirs: dict[Path, set[str]] = {}
     edges: dict[Path, set[Path]] = {}
+    pending_warnings: list[tuple[str, set[str]]] = []
     for doc in docs.values():
-        edges[doc.path] = _check_document(root, doc, docs, top_dirs, report)
+        candidate_dirs = top_dirs.copy()
+        parent = doc.path.parent
+        while parent != root and parent.is_relative_to(root):
+            if parent not in child_dirs:
+                child_dirs[parent] = _direct_subdirectories(parent)
+            candidate_dirs.update(child_dirs[parent])
+            parent = parent.parent
+        edges[doc.path] = _check_document(
+            root, doc, docs, candidate_dirs, report, pending_warnings, check_private_paths=check_private_paths
+        )
 
-    _check_reachability(root, docs, edges, strict, historical, report)
+    ignored = _ignored_code_paths(root, pending_warnings)
+    for warning, attempts in pending_warnings:
+        if ignored.isdisjoint(attempts):
+            report.warn(warning)
+    _check_reachability(root, docs, edges, strict, report)
     if check_private_paths:
         _check_private_paths(root, files, report)
     return report
@@ -754,72 +931,102 @@ def _md_target(path: Path) -> Path | None:
     return path if path.suffix.lower() == ".md" else None
 
 
+def _resolve_code_path(
+    root: Path,
+    base_dir: Path,
+    kind: str,
+    value: str,
+    *,
+    check_private_paths: bool,
+) -> tuple[ResolvedPath, set[str]]:
+    bases = [base_dir]
+    if kind == "root":
+        bases.extend(parent for parent in base_dir.parents if parent.is_relative_to(root))
+    elif base_dir != root:
+        bases.append(root)
+
+    missing: set[str] = set()
+    best_problem = None
+    for base in bases:
+        resolved = resolve_local(root, base, value, check_private_paths=check_private_paths)
+        if not resolved.problem:
+            return resolved, set()
+        if resolved.problem == "does not exist":
+            if resolved.path.is_relative_to(root):
+                relative = resolved.path.relative_to(root).as_posix()
+                missing.add(relative + "/" if value.endswith("/") else relative)
+        elif best_problem is None:
+            best_problem = resolved
+    return best_problem or resolved, missing
+
+
 def _check_document(
     root: Path,
     doc: _Doc,
     docs: dict[Path, _Doc],
-    top_dirs: set[str],
+    candidate_dirs: set[str],
     report: Report,
+    pending_warnings: list[tuple[str, set[str]]],
+    *,
+    check_private_paths: bool,
 ) -> set[Path]:
     targets: set[Path] = set()
     base_dir = doc.path.parent
     for target, line in extract_links(doc.text):
-        parsed = urlsplit(target)
-        if parsed.scheme or parsed.netloc or target.startswith("//"):
+        local = _local_link_target(target)
+        if local is None:
             continue
+        path, fragment = local
         location = f"{doc.relative}:{line}"
-        if not parsed.path:
-            if parsed.fragment and not doc.historical and not _has_anchor(doc.anchors, parsed.fragment):
-                report.error(f"{location}: missing heading anchor '#{parsed.fragment}'")
+        if not path:
+            if fragment and not doc.historical and not _has_anchor(doc.anchors, fragment):
+                report.error(f"{location}: missing heading anchor '#{fragment}'")
             continue
-        resolved = resolve_local(root, base_dir, unquote(parsed.path))
+        resolved = resolve_local(root, base_dir, path, check_private_paths=check_private_paths)
         if resolved.problem:
-            if not doc.historical:
+            if resolved.private_violation or not doc.historical:
                 report.error(f"{location}: broken link '{target}' ({resolved.problem})")
             continue
-        markdown = _md_target(resolved.path)
-        if markdown is not None:
-            targets.add(markdown.absolute())
-        if parsed.fragment and not doc.historical and resolved.path.suffix.lower() == ".md":
+        if resolved.inside_root and (markdown := _md_target(resolved.path)) is not None:
+            targets.add(markdown)
+        if fragment and not doc.historical and resolved.path.suffix.lower() == ".md":
             linked = docs.get(resolved.path)
             anchors = linked.anchors if linked else heading_anchors(_read_text(resolved.path) or "")
-            if not _has_anchor(anchors, parsed.fragment):
+            if not _has_anchor(anchors, fragment):
                 report.error(f"{location}: missing heading anchor '{target}'")
 
     if doc.is_navigation:
         for value, line in _imports(doc.text):
-            if value.startswith("~") or os.path.isabs(value):
-                continue
-            resolved = resolve_local(root, base_dir, value)
+            resolved = resolve_local(root, base_dir, value, check_private_paths=check_private_paths, root_relative=False)
             if resolved.problem:
                 # Only CLAUDE.md evaluates @imports; elsewhere '@name/pkg' is ordinary prose.
-                if doc.path.name == "CLAUDE.md" and not doc.historical:
+                if doc.path.name == "CLAUDE.md" and (resolved.private_violation or not doc.historical):
                     report.error(f"{doc.relative}:{line}: broken import '@{value}' ({resolved.problem})")
-            elif resolved.path.suffix.lower() == ".md":
-                targets.add(resolved.path.absolute())
+            elif resolved.inside_root and resolved.path.suffix.lower() == ".md":
+                targets.add(resolved.path)
 
     masked = mask_blocks(doc.text)
     for start, _, content in iter_code_spans(masked):
         line = _line_of(masked, start)
-        candidate = code_path_candidate(content, top_dirs)
+        candidate = code_path_candidate(content, candidate_dirs)
         if candidate is not None:
             kind, value = candidate
-            base = root if kind == "root" else base_dir
-            resolved = resolve_local(root, base, LOCATION_SUFFIX_RE.sub("", value))
+            resolved, missing = _resolve_code_path(root, base_dir, kind, value, check_private_paths=check_private_paths)
             if resolved.problem:
                 if not doc.historical:
-                    report.error(f"{doc.relative}:{line}: code path '{content}' {resolved.problem}")
+                    warning = f"{doc.relative}:{line}: code path '{content}' {resolved.problem}"
+                    pending_warnings.append((warning, missing))
                 continue
-            if doc.is_navigation:
+            if doc.is_navigation and resolved.inside_root:
                 markdown = _md_target(resolved.path)
                 if markdown is not None:
-                    targets.add(markdown.absolute())
+                    targets.add(markdown)
         elif doc.is_navigation and re.fullmatch(r"[A-Za-z0-9_.-]+\.md", content.strip()):
             # A bare document name in an entrypoint or index navigates only when it exists.
             for base in (base_dir, root):
-                resolved = resolve_local(root, base, content.strip())
-                if not resolved.problem:
-                    targets.add(resolved.path.absolute())
+                resolved = resolve_local(root, base, content.strip(), check_private_paths=check_private_paths)
+                if resolved.inside_root:
+                    targets.add(resolved.path)
                     break
     return targets
 
@@ -829,7 +1036,6 @@ def _check_reachability(
     docs: dict[Path, _Doc],
     edges: dict[Path, set[Path]],
     strict: bool,
-    historical: list[str],
     report: Report,
 ) -> None:
     entries = [root / name for name in ENTRY_NAMES if (root / name) in docs]
@@ -1059,10 +1265,10 @@ def validate_skill_tree(skill_root: Path, expected_name: str | None = None) -> l
     if "TODO" in text:
         errors.append("SKILL.md contains unresolved TODO text")
     for target, line in extract_links(text):
-        parsed = urlsplit(target)
-        if parsed.scheme or parsed.netloc or not parsed.path:
+        local = _local_link_target(target)
+        if local is None or not local[0]:
             continue
-        resolved = resolve_local(skill_root, skill_root, unquote(parsed.path))
+        resolved = resolve_local(skill_root, skill_root, local[0])
         if resolved.problem:
             errors.append(f"SKILL.md:{line}: broken link '{target}' ({resolved.problem})")
 
@@ -1121,7 +1327,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check-private-paths",
         action="store_true",
-        help="reject machine-specific home-directory paths in project files",
+        help="reject outside-root links and imports, and machine-specific home paths in project files",
     )
     parser.add_argument(
         "--skill",

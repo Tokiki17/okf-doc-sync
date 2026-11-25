@@ -75,6 +75,7 @@ The entrypoint is the instruction file a host loads first. Its job is routing, n
 - **Size.** As a tidying reference, not a gate, an entrypoint that routes to more than about 10 documents or runs past about 120 lines usually mixes content into routing; move content into the routed docs.
 - **Routine syncs.** Edit a route only when its target, trigger, or boundary changed, or a new hidden constraint appeared. A correct entrypoint needs no rewrite for each change.
 - **Reachability.** Every maintained file under `docs/` should be reachable from the entrypoint through links, an index, `@path` imports, or backtick paths in an entrypoint or index. An index that the entrypoint never reaches does not count.
+- **Frozen records.** The checker recognizes directories named `history`, `historical`, `archive`, `archived`, or `superpowers` regardless of case. For another directory, put `<!-- doc-sync: historical-dir custom/logs -->` in the root instruction entrypoint or pass `--historical-dir`. The plural form `historical-dirs` also accepts comma- or whitespace-separated project-relative directories and an optional equals sign. Place declarations outside code blocks and inline code spans.
 
 ## Agent instruction files
 
@@ -92,7 +93,7 @@ The entrypoint is the instruction file a host loads first. Its job is routing, n
 ## Shareable content
 
 - Before writing to a repository that is or may become public, keep machine-specific absolute paths, usernames, private project or employer names, and personal records out of it; use repository-relative paths and generic descriptions.
-- Keep links resolvable from a fresh checkout. Links to sibling checkouts or local files break for every other reader; cite a public URL or plain text instead.
+- Keep links resolvable from a fresh checkout. For references outside a shareable repository, cite a public URL or use plain text. The checker supports sibling checkout links in a local workspace. Run it with `--check-private-paths` for shareable content.
 
 ## Review and verification
 

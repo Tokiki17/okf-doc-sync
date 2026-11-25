@@ -1,6 +1,6 @@
 ---
 name: doc-sync
-description: Keeps a project's single-layer authoritative living docs and agent instruction entrypoint in step with confirmed changes. Routes readers from the entrypoint to the contracts code cannot show, records each hidden constraint once, and edits docs only when a described behavior, constraint, command, status, or path actually changes. Use after such a change, when setting up or tidying a project's documentation entrypoint, or when documentation drift is found.
+description: Keeps a project's single-layer authoritative living docs and agent instruction entrypoint in step with confirmed changes. Routes readers from the entrypoint to the contracts code cannot show, records each hidden constraint once, and limits routine sync edits to changes in documented behavior, constraints, commands, status, or paths. Use after such a change, when setting up or tidying a project's documentation entrypoint, or when documentation drift is found.
 ---
 
 # Doc Sync
@@ -19,7 +19,7 @@ Help the next reader enter the project quickly, find the constraints the code do
 
 ## Project entrypoint
 
-The entrypoint is the project's instruction file (`AGENTS.md`, or a host file such as `CLAUDE.md` that imports it), else `README.md`. Reuse its existing structure. It carries two things:
+The entrypoint is the project's instruction file (`AGENTS.md` or a file that imports it), else `README.md`. Reuse its existing structure. It carries two things:
 
 1. **Read-time routing.** For each kind of change that has a hidden constraint: which contract to read first, and when no further reading is needed. Route only where the code alone would mislead; ordinary changes need no route. Name the trap so readers know why to open the target doc, without copying mutable defaults, numbers, or tables into the route. State the no-read boundary explicitly, for example "changes confined to one module's internals need no doc reading".
    - Before adding or changing a route, open the target section and confirm it fully defines every concept the route names. When the code has look-alike concepts with different meanings or values (two separate ID spaces, enums, or config formats), never attach the undefined one to a section that defines only the other.
@@ -31,10 +31,16 @@ The entrypoint is the project's instruction file (`AGENTS.md`, or a host file su
 
 ## Workflow
 
-1. **Classify the change.** If it stays inside one module's implementation, and no command-line option, configuration or data schema, cross-file ID or enum, file path, external behavior, or status changed, and no new cross-session rule appeared, stop: leave the docs untouched and say so. If it touches any of those boundaries, continue.
-2. **Search, then find the one authoritative place.** Search the entrypoint and documentation directories for each changed identifier, field name, and path; do not guess from memory whether a doc mentions it. Follow the entrypoint's routes from there. Do not pre-read the whole project.
+1. **Choose the workflow.**
+   - **Routine post-change sync.** If the change stays inside one module's implementation and changes no command-line option, configuration or data schema, cross-file ID or enum, file path, external behavior, or status, and adds no cross-session rule, stop. Leave the docs untouched and say so. If it touches a contract boundary, continue to step 2.
+   - **Requested entrypoint setup, tidying, or drift repair.** Run `validate_docs.py` first to inventory broken links, missing anchors, unreachable `docs/` files, and unresolved path warnings. For each in-scope finding, check the current workspace and version history (`git log` when available).
+     - Correct verified path typos, update references to renamed files or scripts, and fix stale heading anchors.
+     - Link orphaned living docs from the entrypoint or a reachable index, or remove obsolete docs after preserving any facts still in force. Preserve frozen archive, plan, and task records. Where needed, declare their directories in the root entrypoint with `<!-- doc-sync: historical-dir DIR -->`.
+     - In kept docs, replace dead links to intentionally removed build outputs, temporary logs, or retired assets with inline-code paths labeled `historical` or `retired`.
+     - Preserve intentional negative constraints such as “do not recreate `old/file`” and cross-repository prose mentions even when they produce advisory backtick warnings. Ask about a missing target only if the workspace and available history cannot establish whether it was intentionally retired or accidentally lost.
+2. **Search, then find the one authoritative place.** Search the entrypoint and documentation directories for affected identifiers, field names, and paths. Follow the entrypoint's routes from there. Do not pre-read the whole project.
 3. **Update or delete there.** Fix the fact in its single home, fix links that point at it, and remove statements the change made false. Ground status claims in current code, configuration, runtime evidence, or user confirmation; a passing structural check proves none of these. Prefer small in-place edits that keep each file's encoding and line endings (`LF` or `CRLF`); do not rewrite whole files with a script.
-4. **Update routing only when it moved.** Touch the entrypoint's routes only when a route's target, trigger, or no-read boundary changed, or when this change created a new hidden constraint that a future reader would otherwise miss.
+4. **Update affected routes.** In routine syncs, edit routes only when a target, trigger, or no-read boundary changed, or when the change created a new hidden constraint. During entrypoint setup or tidying, add missing routes for hidden constraints and repair verified routing defects.
 5. **Validate.** Run the bundled checker and the project's own required checks that match the change, then review the affected diff.
 6. **Report.** State what changed, which checks ran and their results, and anything left open.
 
@@ -52,4 +58,6 @@ The entrypoint is the project's instruction file (`AGENTS.md`, or a host file su
 python3 <doc-sync-skill-dir>/scripts/validate_docs.py <project-root> [--strict] [--historical-dir DIR] [--check-private-paths]
 ```
 
-Resolve this skill's directory from the host (skill listing, loader message, or install path), run the checker directly, and fix what it reports; do not read the checker's source unless changing the checker itself. The checker walks from the real entrypoint and reports broken local links, missing heading anchors, case mismatches, links that escape the project, stale backtick paths, a `CLAUDE.md` that does not import a sibling `AGENTS.md`, and `docs/` files the entrypoint cannot reach (warnings by default, errors with `--strict`). `--historical-dir` exempts frozen records; `--check-private-paths` rejects home-directory paths in files a public repository would publish. If the checker cannot run, state that and list the checks actually performed.
+Resolve this skill's directory from the host (skill listing, loader message, or install path) and run the checker directly. Do not read the checker's source unless changing the checker itself. Apply the workflow and scope rules above to its findings. It checks living Markdown for broken links, imports, and anchors, and checks whether maintained `docs/` files are reachable from the entrypoint. Unresolved backtick paths are warnings in both modes. `--strict` makes unreachable documentation an error.
+
+The default mode checks links to sibling projects and machine-local files against disk. For shareable projects, use `--check-private-paths` to reject links or imports outside the project and machine-specific home paths. Common history directory names are exempt from living-doc checks. Use `--historical-dir` or the entrypoint declaration described in the [maintenance standard](references/doc-maintenance.md#project-entrypoint) for other frozen records. If the checker cannot run, state which checks you performed.

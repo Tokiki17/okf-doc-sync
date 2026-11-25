@@ -102,7 +102,7 @@ def main() -> int:
         errors.extend(git_diff_errors())
     for warning in warnings:
         print(f"WARNING: {warning}")
-    if errors:
+    if errors or warnings:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
