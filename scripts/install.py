@@ -23,17 +23,31 @@ IGNORED_NAMES = {".DS_Store", "__pycache__"}
 REQUIRED_FILES = ("SKILL.md", "agents/openai.yaml", "scripts/validate_docs.py")
 
 
-HOST_HOMES = {
-    "codex": ("CODEX_HOME", ".codex"),
-    "claude": ("CLAUDE_CONFIG_DIR", ".claude"),
+HOST_HOMES: dict[str, tuple[str | None, str]] = {
     "agents": (None, ".agents"),
+    "antigravity": (None, ".gemini/config"),
+    "claude": ("CLAUDE_CONFIG_DIR", ".claude"),
+    "codex": ("CODEX_HOME", ".codex"),
+    "copilot": ("COPILOT_HOME", ".copilot"),
+    "cursor": ("CURSOR_CONFIG_DIR", ".cursor"),
+    "dsh": ("DSH_HOME", ".dsh"),
+    "gemini": ("GEMINI_CLI_HOME", ".gemini"),
+    "opencode": ("OPENCODE_CONFIG_DIR", ".config/opencode"),
+    "windsurf": (None, ".codeium/windsurf"),
 }
 
 
 def default_target(host: str = "codex") -> Path:
-    env_name, home_name = HOST_HOMES[host]
+    env_name, home_subpath = HOST_HOMES[host]
     configured = os.environ.get(env_name) if env_name else None
-    base = Path(configured).expanduser() if configured else Path.home() / home_name
+    if host == "gemini":
+        # GEMINI_CLI_HOME overrides the parent home directory holding .gemini/.
+        home = Path(configured).expanduser() if configured else Path.home()
+        base = home / home_subpath
+    elif host == "opencode" and not configured and os.environ.get("XDG_CONFIG_HOME"):
+        base = Path(os.environ["XDG_CONFIG_HOME"]).expanduser() / "opencode"
+    else:
+        base = Path(configured).expanduser() if configured else Path.home() / home_subpath
     return base / "skills" / SKILL_NAME
 
 

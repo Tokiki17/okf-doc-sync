@@ -69,7 +69,7 @@ A passing test or validator proves structure, not that a feature is `active`, de
 The entrypoint is the instruction file a host loads first. Its job is routing, not content.
 
 - **Reuse what exists.** Keep the project's current entrypoint structure and any existing rule equivalent to the write-time rule in `SKILL.md`. Do not reword an equivalent rule.
-- **Route only hidden constraints.** A route names a kind of change, the contract to read before making it, and when reading can stop. Add a route only where a reader working from the code would otherwise break a constraint.
+- **Route only hidden constraints.** A route names a kind of change, the contract to read before making it, and when reading can stop. Add a route only where a reader working from the code would otherwise break a constraint. Name the trap without copying mutable defaults, numbers, or tables from the target doc, which would drift and let readers skip opening the contract. [Google, Claude Code best practices]
 - **Verify every route.** Before writing a route, open its target section and confirm it fully defines each concept the route names. When the code has look-alike concepts with different meanings or values, such as two separate ID spaces, never route the undefined one to a section that defines only the other; a reader who trusts the route will stop reading and copy the wrong value.
 - **State the no-read boundary.** Say which changes need no doc reading, so readers do not pre-read the project for routine edits.
 - **Size.** As a tidying reference, not a gate, an entrypoint that routes to more than about 10 documents or runs past about 120 lines usually mixes content into routing; move content into the routed docs.
@@ -87,7 +87,7 @@ The entrypoint is the instruction file a host loads first. Its job is routing, n
 | --- | --- | --- |
 | Codex | `AGENTS.override.md` or `AGENTS.md` per directory from root to the working directory, within a combined size cap | Keeping shared rules in `AGENTS.md` and overrides near the specialized code [Codex AGENTS.md] |
 | Claude Code | `CLAUDE.md`; reads `AGENTS.md` directly when no project `CLAUDE.md` exists | Omitting `CLAUDE.md` unless Claude-specific rules exist; otherwise starting it with an `@AGENTS.md` import and adding only Claude-specific lines [Claude Code memory] |
-| Other `AGENTS.md` tools | `AGENTS.md`, sometimes after configuration | Pointing the tool at `AGENTS.md` instead of copying it [AGENTS.md] |
+| Other `AGENTS.md` tools | `AGENTS.md` (alongside tool-specific files such as `GEMINI.md` when present, or after configuration) | Keeping shared project rules in `AGENTS.md` instead of copying them into tool-specific files [AGENTS.md] |
 
 ## Shareable content
 
@@ -102,7 +102,7 @@ The entrypoint is the instruction file a host loads first. Its job is routing, n
 
 ## Sources
 
-Checked 2026-10-09. Re-check a source before relying on a rule that may have changed.
+Checked 2026-11-25. Re-check a source before relying on a rule that may have changed.
 
 - [Google] [Documentation best practices](https://google.github.io/styleguide/docguide/best_practices.html), Google style guides.
 - [GitLab] [Documentation workflow](https://docs.gitlab.com/development/documentation/workflow/), GitLab development docs.

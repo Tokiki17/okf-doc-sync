@@ -127,6 +127,64 @@ class InstallTests(unittest.TestCase):
             self.assertIn(str(Path(temp_dir) / ".agents" / "skills" / "doc-sync"), completed.stdout)
             self.assertFalse((Path(temp_dir) / ".agents").exists())
 
+    def test_additional_host_presets_and_environment_overrides(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            base_env = {
+                "HOME": str(home),
+                "USERPROFILE": str(home),
+            }
+            defaults = {
+                "antigravity": home / ".gemini" / "config" / "skills" / "doc-sync",
+                "copilot": home / ".copilot" / "skills" / "doc-sync",
+                "cursor": home / ".cursor" / "skills" / "doc-sync",
+                "dsh": home / ".dsh" / "skills" / "doc-sync",
+                "gemini": home / ".gemini" / "skills" / "doc-sync",
+                "opencode": home / ".config" / "opencode" / "skills" / "doc-sync",
+                "windsurf": home / ".codeium" / "windsurf" / "skills" / "doc-sync",
+            }
+            with mock.patch.dict(os.environ, base_env, clear=True):
+                for host, expected in defaults.items():
+                    with self.subTest(host=host):
+                        self.assertEqual(installer.default_target(host), expected)
+                self.assertEqual(
+                    installer.work_root(defaults["antigravity"]),
+                    home / ".gemini" / "config" / ".doc-sync-install",
+                )
+
+            custom = Path(temp_dir) / "custom"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    **base_env,
+                    "DSH_HOME": str(custom / "dsh-home"),
+                    "GEMINI_CLI_HOME": str(custom / "gemini-root"),
+                    "XDG_CONFIG_HOME": str(custom / "xdg"),
+                },
+                clear=True,
+            ):
+                self.assertEqual(installer.default_target("dsh"), custom / "dsh-home" / "skills" / "doc-sync")
+                self.assertEqual(
+                    installer.default_target("gemini"),
+                    custom / "gemini-root" / ".gemini" / "skills" / "doc-sync",
+                )
+                self.assertEqual(installer.default_target("opencode"), custom / "xdg" / "opencode" / "skills" / "doc-sync")
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    **base_env,
+                    "XDG_CONFIG_HOME": str(custom / "xdg"),
+                    "OPENCODE_CONFIG_DIR": str(custom / "opencode-direct"),
+                },
+                clear=True,
+            ):
+                self.assertEqual(
+                    installer.default_target("opencode"),
+                    custom / "opencode-direct" / "skills" / "doc-sync",
+                )
+
     def test_dry_run_does_not_write(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "skills" / "doc-sync"

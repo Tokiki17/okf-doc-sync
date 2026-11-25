@@ -17,22 +17,35 @@ DocSync ships one host-neutral skill that any agent harness supporting the [Agen
 
 | Host | Command | Default target |
 | --- | --- | --- |
-| Codex (existing installs) | `python3 scripts/install.py` | `${CODEX_HOME:-~/.codex}/skills/doc-sync` |
-| Codex and other `.agents` readers | `python3 scripts/install.py --host agents` | `~/.agents/skills/doc-sync` |
+| Codex (default) | `python3 scripts/install.py` | `${CODEX_HOME:-~/.codex}/skills/doc-sync` |
+| Shared `.agents` readers | `python3 scripts/install.py --host agents` | `~/.agents/skills/doc-sync` |
 | Claude Code | `python3 scripts/install.py --host claude` | `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/doc-sync` |
+| Gemini CLI | `python3 scripts/install.py --host gemini` | `${GEMINI_CLI_HOME:-~}/.gemini/skills/doc-sync` |
+| Google Antigravity | `python3 scripts/install.py --host antigravity` | `~/.gemini/config/skills/doc-sync` |
+| Cursor | `python3 scripts/install.py --host cursor` | `${CURSOR_CONFIG_DIR:-~/.cursor}/skills/doc-sync` |
+| GitHub Copilot (CLI / VS Code) | `python3 scripts/install.py --host copilot` | `${COPILOT_HOME:-~/.copilot}/skills/doc-sync` |
+| Windsurf | `python3 scripts/install.py --host windsurf` | `~/.codeium/windsurf/skills/doc-sync` |
+| OpenCode | `python3 scripts/install.py --host opencode` | `${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-~/.config}/opencode}/skills/doc-sync` |
+| DeepSeek Harness | `python3 scripts/install.py --host dsh` | `${DSH_HOME:-~/.dsh}/skills/doc-sync` |
 | Any other harness or project scope | `python3 scripts/install.py --target <dir>/doc-sync` | The given directory |
 
-Install only one copy per skill root a host scans. Codex does not merge same-named skills, so do not install both the `~/.codex` and `~/.agents` copies on one Codex host. Claude Code picks up edits to existing skill directories within a session; a newly created top-level skills directory needs `/reload-skills`.
+Install only one copy per skill root a host scans:
+
+- **Shared `~/.agents/skills` overlap**: Codex, Gemini CLI, Cursor, GitHub Copilot, and DeepSeek Harness scan `~/.agents/skills` in addition to their own user directory, and `.agents`-native harnesses (such as Goose, Amp, Roo Code, and Kiro) read `~/.agents/skills` directly. Choose either `--host agents` for shared coverage or per-host `--host` installs, and do not install both `~/.codex` and `~/.agents` copies on one Codex host (which does not merge same-named skills).
+- **Cross-tool `~/.claude/skills` overlap**: GitHub Copilot also scans `~/.claude/skills` for personal skills, so a machine that already maintains `--host claude` needs no separate `--host copilot` copy unless `COPILOT_HOME` is isolated.
+- **Hot reload**: Claude Code and DeepSeek Harness pick up edits to existing skill directories within a session; a newly created top-level skills directory in Claude Code needs `/reload-skills`.
 
 ## Host notes
 
 - **Codex**: loads a capped catalog of names, descriptions, and paths first and reads `SKILL.md` on selection, so the description front-loads the task and triggers. `agents/openai.yaml` keeps implicit invocation enabled. Codex lists `.agents/skills` roots; existing `~/.codex/skills` installs keep working. Resolve resource-backed skill locators through the host instead of assuming a local path. [Codex skills guide](https://learn.chatgpt.com/docs/build-skills)
 - **Claude Code**: loads personal skills from `~/.claude/skills` and project skills from `.claude/skills`, and provides the skill's base directory when it loads the skill. Edits to existing skill directories apply within a session. [Claude Code skills](https://code.claude.com/docs/en/skills)
+- **Gemini CLI and Antigravity**: Gemini CLI reads user skills from `~/.gemini/skills` (`$GEMINI_CLI_HOME/.gemini/skills` when `GEMINI_CLI_HOME` is set), whereas Antigravity's global discovery root is `~/.gemini/config/skills` (workspace `.agents/skills` works in both).
+- **Cursor, GitHub Copilot, Windsurf, OpenCode, and DeepSeek Harness**: all read standard `SKILL.md` directories with progressive disclosure (`name` and `description` at discovery, body and bundled scripts on activation) and ignore `agents/openai.yaml`.
 - **Model and execution choice**: the skill never selects models, reasoning settings, or client versions, and defines no delegation protocol. Routine synchronization runs in the current session; whether a large task is split up is the host's decision.
 
 ## Agent instruction files
 
-The skill treats instruction files as the project entrypoint and keeps shared rules in `AGENTS.md`. Claude Code reads `AGENTS.md` directly when a project has no `CLAUDE.md`, so this repository has no `CLAUDE.md`. A project that needs Claude-specific rules adds a `CLAUDE.md` that imports `@AGENTS.md` and holds only those rules; the checker warns when a root `CLAUDE.md` lacks that import. Details and sources are in the maintenance standard.
+The skill treats instruction files as the project entrypoint and keeps shared rules in `AGENTS.md`, which Codex, Gemini CLI, Antigravity, Cursor, GitHub Copilot, Windsurf, OpenCode, and DeepSeek Harness all read directly. Claude Code also reads `AGENTS.md` directly when a project has no `CLAUDE.md`, so this repository has no `CLAUDE.md`. A project that needs Claude-specific rules adds a `CLAUDE.md` that imports `@AGENTS.md` and holds only those rules; the checker warns when a root `CLAUDE.md` lacks that import. Details and sources are in the maintenance standard.
 
 ## Verification boundary
 

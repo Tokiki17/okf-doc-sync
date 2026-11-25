@@ -2,11 +2,11 @@
 
 ## Source and installation
 
-`skills/doc-sync/` is the only editable source. `scripts/install.py` copies it into a host's skills directory (`--host codex`, `agents`, or `claude`, or any `--target`) and verifies byte-for-byte parity. See [Host compatibility](host-compatibility.md) for default targets.
+`skills/doc-sync/` is the only editable source. `scripts/install.py` copies it into a host's skills directory (`--host <host>` or any `--target`) and verifies byte-for-byte parity. See [Host compatibility](host-compatibility.md) for supported `--host` presets and default targets.
 
 ```text
-skills/doc-sync/  ->  scripts/install.py [--host codex|agents|claude | --target DIR]  ->  <host>/skills/doc-sync/
-   canonical                                                                              installed mirror
+skills/doc-sync/  ->  scripts/install.py [--host HOST | --target DIR]  ->  <host>/skills/doc-sync/
+   canonical                                                                installed mirror
 ```
 
 - **Work root.** Hosts load every directory containing `SKILL.md` under a skills root, so staging and the rollback backup never live there. A standard `<base>/skills/doc-sync` target uses `<base>/.doc-sync-install/`. A shallow target, or one inside a repository (any ancestor holds `.git`), uses the user cache, `~/.cache/doc-sync-install/<hash>/` (`$XDG_CACHE_HOME` when set, `%LOCALAPPDATA%` on Windows), so no project tree gains install artifacts.
