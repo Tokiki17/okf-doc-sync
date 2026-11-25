@@ -163,6 +163,52 @@ class LinkAndPathTests(ProjectTestCase):
             ["AGENTS.md:3: broken link 'missing_(v2).md' (does not exist)"],
         )
 
+    def test_reference_definition_needs_a_clean_destination(self) -> None:
+        self.write(
+            "AGENTS.md",
+            "# Agents\n\n"
+            "[INFO]: server started\n"
+            "[Option A]: read the guide first\n\n"
+            '[r]: missing.md "Title"\n\n'
+            "[r2]:\n"
+            "  missing2.md\n",
+        )
+        self.assertEqual(
+            self.validate().errors,
+            [
+                "AGENTS.md:6: broken link 'missing.md' (does not exist)",
+                "AGENTS.md:9: broken link 'missing2.md' (does not exist)",
+            ],
+        )
+
+    def test_leading_thematic_break_is_not_frontmatter(self) -> None:
+        self.write("scripts/tool.py", "")
+        self.write(
+            "AGENTS.md",
+            "---\n\n# Agents\n\n"
+            "[gone](missing-break.md) and `scripts/missing.py`.\n"
+            "[Dots](docs/dots.md) [Front](docs/front.md)\n\n"
+            "---\n\nTail.\n",
+        )
+        self.write("docs/dots.md", "---\n\n[x](missing-dots.md)\n\n...\n")
+        self.write(
+            "docs/front.md",
+            "---\n# comment\ntitle: Front\nrelated: [x](missing-front.md)\ntags:\n  - a\n---\n\n# Front\n",
+        )
+        errors = self.validate().errors
+        self.assertEqual(len(errors), 3, errors)
+        self.assertIn("AGENTS.md:5: broken link 'missing-break.md' (does not exist)", errors)
+        self.assertIn("AGENTS.md:5: code path 'scripts/missing.py' does not exist", errors)
+        self.assertIn("docs/dots.md:3: broken link 'missing-dots.md' (does not exist)", errors)
+
+    def test_crlf_blank_line_ends_unclosed_bracket(self) -> None:
+        path = self.root / "AGENTS.md"
+        path.write_bytes(b"Open [note\r\n\r\nSee [real](missing-crlf.md) ]\r\n")
+        self.assertEqual(
+            self.validate().errors,
+            ["AGENTS.md:3: broken link 'missing-crlf.md' (does not exist)"],
+        )
+
     def test_links_must_stay_inside_the_project(self) -> None:
         outside = Path(self._temp.name).parent / f"outside-{os.getpid()}.md"
         outside.write_text("# Outside\n", encoding="utf-8")

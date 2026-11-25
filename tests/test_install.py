@@ -259,6 +259,48 @@ class InstallTests(unittest.TestCase):
             backups = list((root / "cache" / "doc-sync-install").glob("*/backup/SKILL.md"))
             self.assertEqual([path.read_text(encoding="utf-8") for path in backups], ["drift"])
 
+    def test_dot_dot_segments_give_the_same_work_root(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            standard = root / "home" / "skills" / "doc-sync"
+            shallow = root / "doc-sync"
+            with mock.patch.dict(os.environ, self.isolated_env(root)):
+                self.assertEqual(
+                    installer.work_root(root / "a" / "b" / ".." / ".." / "home" / "skills" / "doc-sync"),
+                    installer.work_root(standard),
+                )
+                self.assertEqual(installer.work_root(standard), root / "home" / ".doc-sync-install")
+                self.assertEqual(
+                    installer.work_root(root / "a" / ".." / "doc-sync"),
+                    installer.work_root(shallow),
+                )
+
+    def test_force_backs_up_target_containing_a_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            env = self.isolated_env(root)
+            target = root / "skills" / "doc-sync"
+            self.assertEqual(self.run_installer("--target", str(target), env=env).returncode, 0)
+            try:
+                (target / "link.md").symlink_to("SKILL.md")
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            check = self.run_installer("--target", str(target), "--check", env=env)
+            dry_run = self.run_installer("--target", str(target), "--dry-run", env=env)
+            refused = self.run_installer("--target", str(target), env=env)
+            self.assertEqual(check.returncode, 1, check.stderr)
+            self.assertIn("DIFF: unsupported symlink in target", check.stderr)
+            self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+            self.assertEqual(refused.returncode, 3, refused.stderr)
+            self.assertTrue((target / "link.md").is_symlink())
+            forced = self.run_installer("--target", str(target), "--force", env=env)
+            self.assertEqual(forced.returncode, 0, forced.stderr)
+            self.assertTrue((root / ".doc-sync-install" / "backup" / "link.md").is_symlink())
+            self.assertFalse(os.path.lexists(target / "link.md"))
+            after = self.run_installer("--target", str(target), "--check", env=env)
+            self.assertEqual(after.returncode, 0, after.stderr)
+
     def test_check_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -43,6 +43,10 @@ def file_record(path: Path) -> tuple[str, bool]:
     return digest, executable
 
 
+class SymlinkInTreeError(ValueError):
+    """A managed skill tree contains a symlink, which installs never create."""
+
+
 def tree_records(root: Path) -> dict[str, tuple[str, bool]]:
     records: dict[str, tuple[str, bool]] = {}
     if not root.exists():
@@ -51,7 +55,7 @@ def tree_records(root: Path) -> dict[str, tuple[str, bool]]:
         if any(part in IGNORED_NAMES for part in path.relative_to(root).parts) or path.suffix == ".pyc":
             continue
         if path.is_symlink():
-            raise ValueError(f"symlinks are not supported in managed skill trees: {path}")
+            raise SymlinkInTreeError(f"symlinks are not supported in managed skill trees: {path}")
         if path.is_file():
             records[path.relative_to(root).as_posix()] = file_record(path)
     return records
@@ -115,7 +119,8 @@ def work_root(target: Path) -> Path:
     <base>/.doc-sync-install; a shallow target or one inside a repository uses the
     user cache so no project tree is touched.
     """
-    target = target.absolute()
+    # abspath folds ".." without following a symlinked final component.
+    target = Path(os.path.abspath(target))
     skills = target.parent
     base = skills.parent
     if skills.name == "skills" and base != base.parent and not _inside_repository(base):
@@ -216,12 +221,18 @@ def main(argv: list[str] | None = None) -> int:
         help="replace a divergent existing installation after keeping a rollback backup",
     )
     args = parser.parse_args(argv)
-    target = (args.target or default_target(args.host)).expanduser().absolute()
+    target = Path(os.path.abspath((args.target or default_target(args.host)).expanduser()))
     try:
         if target.is_symlink():
             raise ValueError(f"refusing to manage symlink target: {target}")
         validate_source(SOURCE)
-        differences = compare_trees(SOURCE, target)
+        try:
+            differences = compare_trees(SOURCE, target)
+        except SymlinkInTreeError as exc:
+            # validate_source already rejected source symlinks, so this one is in
+            # the existing target: report it as a difference so --force can back
+            # the target up and replace it.
+            differences = [f"unsupported symlink in target: {exc}"]
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

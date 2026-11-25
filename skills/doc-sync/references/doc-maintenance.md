@@ -30,7 +30,7 @@ Walk the rows that match the confirmed change; skip the rest.
 | User-visible behavior | README overview, tutorials and how-to guides, reference, changelog or release notes |
 | Interface, CLI, configuration, schema, environment variable | Reference docs, examples, docstrings and API comments, sample configs |
 | Build, test, run, release commands; layout; conventions | Agent instruction files, README getting started, `CONTRIBUTING` |
-| Hidden constraint, design reason, or trap | Its single authoritative doc, and an entrypoint route if readers would otherwise miss it |
+| Hidden constraint, design reason, or trap | Its single authoritative doc, and an entrypoint route if readers would otherwise miss it. Two frequent traps: parallel ID or enum spaces across files that are easy to confuse, and static configuration or data file conventions the code does not validate on load. Look for them when a change touches them or existing docs hint at them; routine tidying does not require reverse-engineering the whole codebase |
 | Architecture or significant decision | A new decision record and the architecture overview; mark replaced decisions as superseded |
 | Deprecation or removal | Notice with replacement and timeline; delete docs for removed features; changelog |
 | Status claim | Every place stating that status, using the states below |
@@ -70,6 +70,7 @@ The entrypoint is the instruction file a host loads first. Its job is routing, n
 
 - **Reuse what exists.** Keep the project's current entrypoint structure and any existing rule equivalent to the write-time rule in `SKILL.md`. Do not reword an equivalent rule.
 - **Route only hidden constraints.** A route names a kind of change, the contract to read before making it, and when reading can stop. Add a route only where a reader working from the code would otherwise break a constraint.
+- **Verify every route.** Before writing a route, open its target section and confirm it fully defines each concept the route names. When the code has look-alike concepts with different meanings or values, such as two separate ID spaces, never route the undefined one to a section that defines only the other; a reader who trusts the route will stop reading and copy the wrong value.
 - **State the no-read boundary.** Say which changes need no doc reading, so readers do not pre-read the project for routine edits.
 - **Size.** As a tidying reference, not a gate, an entrypoint that routes to more than about 10 documents or runs past about 120 lines usually mixes content into routing; move content into the routed docs.
 - **Routine syncs.** Edit a route only when its target, trigger, or boundary changed, or a new hidden constraint appeared. A correct entrypoint needs no rewrite for each change.

@@ -52,6 +52,7 @@ REFERENCE_DEFINITION_RE = re.compile(r"^ {0,3}\[([^\]\n]+)\]:[ \t]*(.*)$")
 HTML_ANCHOR_RE = re.compile(r"<a\s[^>]*\b(?:id|name)\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
 IMPORT_RE = re.compile(r"(?:(?<=\s)|^)@([^\s`'\"()<>\[\]{}]+)", re.MULTILINE)
 CODE_PATH_RE = re.compile(r"(?:\.{1,2}/)*[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]+)*/?")
+BLANK_LINE_RE = re.compile(r"[ \t]*\r?\n")
 LOCATION_SUFFIX_RE = re.compile(r"(?::\d+(?:[:-]\d+)?|#L\d+(?:-L?\d+)?)$")
 
 
@@ -102,6 +103,37 @@ def _blank_line(content: str) -> str:
     return " " * len(content)
 
 
+FRONTMATTER_LINE_RE = re.compile(r"[A-Za-z0-9_.\"'-]+[ \t]*:|-(?:[ \t]|$)")
+
+
+def _frontmatter_end(lines: list[str]) -> int | None:
+    """Return the closing line index of YAML frontmatter, or None.
+
+    A leading ``---`` is frontmatter only when a later line is exactly ``---``,
+    the block does not start with a blank line (a thematic break followed by a
+    paragraph), and every non-blank, non-comment line is indented or looks like
+    a top-level YAML key or list item. Otherwise the text stays Markdown.
+    """
+    if not lines or lines[0].rstrip("\r\n") != "---":
+        return None
+    for end in range(1, len(lines)):
+        if lines[end].rstrip("\r\n") == "---":
+            break
+    else:
+        return None
+    body = [line.rstrip("\r\n") for line in lines[1:end]]
+    if body and not body[0].strip():
+        return None
+    for content in body:
+        stripped = content.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if content[:1] in {" ", "\t"} or FRONTMATTER_LINE_RE.match(content):
+            continue
+        return None
+    return end
+
+
 def mask_blocks(text: str) -> str:
     """Blank frontmatter, fenced and indented code blocks, and HTML comments.
 
@@ -111,14 +143,12 @@ def mask_blocks(text: str) -> str:
     lines = text.splitlines(keepends=True)
     output: list[str] = []
     index = 0
-    if lines and lines[0].rstrip("\r\n") == "---":
-        for end in range(1, len(lines)):
-            if lines[end].rstrip("\r\n") in {"---", "..."}:
-                for position in range(end + 1):
-                    content = lines[position].rstrip("\r\n")
-                    output.append(_blank_line(content) + lines[position][len(content) :])
-                index = end + 1
-                break
+    end = _frontmatter_end(lines)
+    if end is not None:
+        for position in range(end + 1):
+            content = lines[position].rstrip("\r\n")
+            output.append(_blank_line(content) + lines[position][len(content) :])
+        index = end + 1
 
     fence_char: str | None = None
     fence_length = 0
@@ -353,8 +383,27 @@ def _closing_bracket(text: str, opening: int) -> int | None:
             if depth == 0:
                 return index
             depth -= 1
-        elif text[index] == "\n" and index + 1 < len(text) and text[index + 1] == "\n":
+        elif text[index] == "\n" and BLANK_LINE_RE.match(text, index + 1):
+            # A blank line (LF or CRLF, optionally with spaces) ends the paragraph.
             return None
+    return None
+
+
+def _definition_target(rest: str) -> str | None:
+    """Return the destination of a reference definition's remainder, or None.
+
+    The remainder must be a destination optionally followed by whitespace and a
+    single-line title; anything else means the line is ordinary text.
+    """
+    parsed = _parse_destination(rest, 0)
+    if parsed is None:
+        return None
+    target, end = parsed
+    trailing = rest[end:]
+    if not trailing.strip():
+        return target
+    if trailing[:1] in " \t" and _skip_title(trailing, 0) == len(trailing):
+        return target
     return None
 
 
@@ -365,20 +414,46 @@ def extract_links(text: str) -> list[tuple[str, int]]:
     links: list[tuple[str, int]] = []
     seen_labels: set[str] = set()
     chars = list(source)
+    lines = source.splitlines(keepends=True)
+    starts: list[int] = []
     offset = 0
-    for number, line in enumerate(source.splitlines(keepends=True), start=1):
-        content = line.rstrip("\r\n")
-        match = REFERENCE_DEFINITION_RE.match(content)
-        if match and not match.group(1).startswith("^"):
-            parsed = _parse_destination(match.group(2), 0)
-            if parsed is not None:
-                label = _normalize_label(match.group(1))
-                if label not in seen_labels:
-                    seen_labels.add(label)
-                    links.append((parsed[0], number))
-                for position in range(offset, offset + len(content)):
-                    chars[position] = " "
+    for line in lines:
+        starts.append(offset)
         offset += len(line)
+
+    def blank(line_index: int) -> None:
+        start = starts[line_index]
+        for position in range(start, start + len(lines[line_index].rstrip("\r\n"))):
+            chars[position] = " "
+
+    skip_next = False
+    for line_index, line in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+        match = REFERENCE_DEFINITION_RE.match(line.rstrip("\r\n"))
+        if not match or match.group(1).startswith("^"):
+            continue
+        rest = match.group(2)
+        target_index = line_index
+        if not rest.strip():
+            # Destination on the following line: "[id]:\n  target".
+            if line_index + 1 >= len(lines) or not lines[line_index + 1].strip():
+                continue
+            target_index = line_index + 1
+            rest = lines[target_index].rstrip("\r\n")
+        target = _definition_target(rest)
+        if target is None:
+            # Ordinary text such as "[INFO]: server started".
+            continue
+        label = _normalize_label(match.group(1))
+        if label not in seen_labels:
+            seen_labels.add(label)
+            links.append((target, target_index + 1))
+        blank(line_index)
+        if target_index != line_index:
+            blank(target_index)
+            skip_next = True
     stripped = "".join(chars)
 
     index = 0
@@ -501,7 +576,11 @@ def resolve_local(root: Path, base_dir: Path, decoded: str) -> ResolvedPath:
     else:
         joined = base_dir / decoded
     lexical = Path(os.path.normpath(joined))
-    relative = os.path.relpath(lexical, root)
+    try:
+        relative = os.path.relpath(lexical, root)
+    except ValueError:
+        # Windows: the path is on another drive than the project root.
+        return ResolvedPath(lexical, "escapes the project root")
     if relative == ".." or relative.startswith(".." + os.sep) or os.path.isabs(relative):
         return ResolvedPath(lexical, "escapes the project root")
     parts = () if relative == "." else tuple(Path(relative).parts)
