@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import importlib.util
 import os
@@ -12,10 +13,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# --check must not write anything, including bytecode for the loaded validator.
+sys.dont_write_bytecode = True
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "skills" / "doc-sync"
+SKILL_NAME = "doc-sync"
 IGNORED_NAMES = {".DS_Store", "__pycache__"}
+REQUIRED_FILES = ("SKILL.md", "agents/openai.yaml", "scripts/validate_docs.py")
 
 
 HOST_HOMES = {
@@ -29,7 +34,7 @@ def default_target(host: str = "codex") -> Path:
     env_name, home_name = HOST_HOMES[host]
     configured = os.environ.get(env_name) if env_name else None
     base = Path(configured).expanduser() if configured else Path.home() / home_name
-    return base / "skills" / "doc-sync"
+    return base / "skills" / SKILL_NAME
 
 
 def file_record(path: Path) -> tuple[str, bool]:
@@ -67,7 +72,7 @@ def compare_trees(source: Path, target: Path) -> list[str]:
 
 
 def load_source_validator(source: Path):
-    validator_path = source / "scripts" / "validate_okf.py"
+    validator_path = source / "scripts" / "validate_docs.py"
     spec = importlib.util.spec_from_file_location("doc_sync_source_validator", validator_path)
     if spec is None or spec.loader is None:
         raise ValueError(f"cannot load source validator: {validator_path}")
@@ -78,116 +83,115 @@ def load_source_validator(source: Path):
 
 
 def validate_source(source: Path) -> None:
-    required = [
-        source / "SKILL.md",
-        source / "agents" / "openai.yaml",
-        source / "scripts" / "validate_okf.py",
-    ]
-    missing = [str(path) for path in required if not path.is_file()]
+    missing = [name for name in REQUIRED_FILES if not (source / name).is_file()]
     if missing:
         raise ValueError(f"canonical source is incomplete: {', '.join(missing)}")
-    validator = load_source_validator(source)
-    skill_text = (source / "SKILL.md").read_text(encoding="utf-8")
-    try:
-        header, _ = validator.split_frontmatter(skill_text)
-        metadata = validator.parse_yaml(header) if header is not None else None
-    except (RuntimeError, ValueError) as exc:
-        raise ValueError(f"canonical SKILL.md has invalid YAML frontmatter: {exc}") from exc
-    if (
-        not isinstance(metadata, dict)
-        or set(metadata) != {"name", "description"}
-        or metadata.get("name") != "doc-sync"
-        or not isinstance(metadata.get("description"), str)
-        or not metadata["description"].strip()
-    ):
-        raise ValueError("canonical SKILL.md has invalid or mismatched frontmatter")
-    if "TODO" in skill_text:
-        raise ValueError("canonical SKILL.md contains unresolved TODO text")
-    try:
-        agent_metadata = validator.parse_yaml(
-            (source / "agents" / "openai.yaml").read_text(encoding="utf-8")
-        )
-    except (RuntimeError, ValueError) as exc:
-        raise ValueError(f"canonical agents/openai.yaml has invalid YAML: {exc}") from exc
-    interface = agent_metadata.get("interface") if isinstance(agent_metadata, dict) else None
-    policy = agent_metadata.get("policy") if isinstance(agent_metadata, dict) else None
-    short_description = interface.get("short_description") if isinstance(interface, dict) else None
-    if (
-        not isinstance(interface, dict)
-        or any(
-            not isinstance(interface.get(key), str) or not interface[key].strip()
-            for key in ("display_name", "short_description", "default_prompt")
-        )
-        or "$doc-sync" not in interface["default_prompt"]
-        or not isinstance(short_description, str)
-        or not 25 <= len(short_description.strip()) <= 64
-        or not isinstance(policy, dict)
-        or policy.get("allow_implicit_invocation") is not True
-    ):
-        raise ValueError("canonical agents/openai.yaml has invalid metadata")
+    errors = load_source_validator(source).validate_skill_tree(source, SKILL_NAME)
+    if errors:
+        raise ValueError("canonical skill is invalid: " + "; ".join(errors))
     if not tree_records(source):
         raise ValueError("canonical source tree is empty")
 
 
+def user_cache_root() -> Path:
+    if os.name == "nt":
+        configured = os.environ.get("LOCALAPPDATA")
+        base = Path(configured) if configured else Path.home() / "AppData" / "Local"
+    else:
+        configured = os.environ.get("XDG_CACHE_HOME")
+        base = Path(configured) if configured else Path.home() / ".cache"
+    return base / "doc-sync-install"
+
+
+def _inside_repository(path: Path) -> bool:
+    return any((candidate / ".git").exists() for candidate in (path, *path.parents))
+
+
 def work_root(target: Path) -> Path:
-    # Hosts discover every directory containing SKILL.md under a skills root,
-    # so staging and rollback copies live beside that root, never inside it.
-    return target.parent.parent / ".doc-sync-install"
+    """Return the staging and backup directory, always outside the skills root.
+
+    Hosts load every directory containing SKILL.md under a skills root, so work
+    files never live there. A standard <base>/skills/doc-sync target keeps them in
+    <base>/.doc-sync-install; a shallow target or one inside a repository uses the
+    user cache so no project tree is touched.
+    """
+    target = target.absolute()
+    skills = target.parent
+    base = skills.parent
+    if skills.name == "skills" and base != base.parent and not _inside_repository(base):
+        return base / ".doc-sync-install"
+    digest = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:16]
+    return user_cache_root() / digest
 
 
 def backup_path(target: Path) -> Path:
     return work_root(target) / "backup"
 
 
-def retire_legacy_backup(target: Path) -> None:
-    legacy = target.parent / ".doc-sync-backup"
-    if not legacy.is_dir() or legacy.is_symlink():
-        return
-    retired = work_root(target) / "legacy-backup"
-    if retired.exists():
-        shutil.rmtree(retired)
-    legacy.rename(retired)
+def _remove(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _copy_tree(source: Path, destination: Path) -> None:
+    try:
+        shutil.copytree(source, destination, symlinks=True)
+    except BaseException:
+        _remove(destination)
+        raise
+
+
+def _move_tree(source: Path, destination: Path) -> None:
+    """Rename on one device; copy then delete across devices (EXDEV)."""
+    try:
+        os.rename(source, destination)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        _copy_tree(source, destination)
+        shutil.rmtree(source)
 
 
 def install(source: Path, target: Path) -> None:
     if target.is_symlink():
         raise ValueError(f"refusing to replace symlink target: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    work_root(target).mkdir(parents=True, exist_ok=True)
-    backup = backup_path(target)
-    temp_parent = Path(tempfile.mkdtemp(prefix="staging-", dir=work_root(target)))
-    staged = temp_parent / "doc-sync"
-    moved_old = False
-    installed_new = False
+    work = work_root(target)
+    work.mkdir(parents=True, exist_ok=True)
+    backup = work / "backup"
+    temp_parent = Path(tempfile.mkdtemp(prefix="staging-", dir=work))
+    staged = temp_parent / SKILL_NAME
+    had_target = target.exists()
+    backed_up = False
+    writing_target = False
     try:
-        shutil.copytree(
-            source,
-            staged,
-            ignore=shutil.ignore_patterns(".DS_Store", "__pycache__", "*.pyc"),
-        )
+        shutil.copytree(source, staged, ignore=shutil.ignore_patterns(".DS_Store", "__pycache__", "*.pyc"))
         if compare_trees(source, staged):
             raise RuntimeError("staged skill failed parity verification")
-        if backup.exists():
-            if backup.is_dir() and not backup.is_symlink():
-                shutil.rmtree(backup)
-            else:
-                backup.unlink()
-        if target.exists():
-            target.rename(backup)
-            moved_old = True
-        staged.rename(target)
-        installed_new = True
+        _remove(backup)
+        if had_target:
+            try:
+                os.rename(target, backup)
+                backed_up = True
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+                _copy_tree(target, backup)
+                backed_up = True
+                writing_target = True
+                shutil.rmtree(target)
+        # From here the target may be partially written; recovery must clean it.
+        writing_target = True
+        _move_tree(staged, target)
         if compare_trees(source, target):
             raise RuntimeError("installed skill failed parity verification")
-        retire_legacy_backup(target)
-    except Exception:
-        if installed_new and target.exists():
-            if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
-        if moved_old and backup.exists() and not target.exists():
-            backup.rename(target)
+    except BaseException:
+        if writing_target:
+            _remove(target)
+            if backed_up:
+                _move_tree(backup, target)
         raise
     finally:
         if temp_parent.exists():
@@ -234,15 +238,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if not differences and target.exists():
-        if not args.dry_run:
-            work_root(target).mkdir(parents=True, exist_ok=True)
-            retire_legacy_backup(target)
         print(f"Installed skill is already current: {target}")
         return 0
 
     action = "install" if not target.exists() else "replace divergent installation"
     if args.dry_run:
         print(f"Would {action}: {target}")
+        print(f"Work directory: {work_root(target)}")
         for difference in differences:
             print(f"DIFF: {difference}")
         return 0
@@ -258,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: installation failed: {exc}", file=sys.stderr)
         return 4
     print(f"Installed doc-sync skill: {target}")
+    print(f"Rollback backup and staging: {work_root(target)}")
     return 0
 
 

@@ -2,21 +2,18 @@
 
 ## Change workflow
 
-1. Keep the repository shareable: no machine-specific absolute paths, private project names, employer details, or personal records. `validate_repo.py` rejects home-directory paths.
-1. Identify the confirmed change and affected skill, docs, or tests. For format or compatibility changes, review the canonical [open-knowledge-format](https://github.com/open-knowledge-format/open-knowledge-format) specification, record repository/SPEC revisions, and check transfer or deprecation notices before trusting an old URL. Local wording or scope guidance does not require a fresh format audit.
-2. Edit only the canonical `skills/doc-sync/` source and related living docs/tests.
-3. Run tests and repository validation.
-4. Install the skill and verify byte-for-byte parity.
-5. Synchronize affected OKF concepts and the update log; change indexes and coverage only where their navigation or mappings changed. Run repository validation after these edits.
+1. Keep the repository shareable: no machine-specific absolute paths, private project names, employer details, or personal records.
+2. Identify the confirmed change and the affected skill files, docs, and tests. Follow the routes in [AGENTS.md](../AGENTS.md) before editing.
+3. Edit only the canonical `skills/doc-sync/` source and the related docs and tests.
+4. Run the validation commands below.
+5. Install the skill into each local mirror you maintain and verify parity.
 6. Review the full diff; commit or push only when requested.
 
-When upstream releases a new OKF version, rewrite `references/okf.md` and the validator for it, add the delta from the previous version (breaking changes and required rewrites only) to `references/okf-migration.md` with a pinned link to the superseded SPEC, and migrate this repository's bundle. Do not keep profiles or full references for earlier versions.
-
-Treat `--doc-sync-profile` as a whole-bundle structural producer gate. This repository must pass it before publishing. For scoped maintenance elsewhere, repair in-scope defects, record pre-existing defects outside the authorized scope and their failed checks, and never claim whole-bundle success while errors remain. This does not silently waive a project's stronger gate. Review factual source quality, status semantics, and coverage claims separately.
+When a rule source changes, update the [maintenance standard](../skills/doc-sync/references/doc-maintenance.md) and its check date. When a host changes discovery or metadata rules, update [Host compatibility](host-compatibility.md).
 
 ## Validation commands
 
-Prepare the [isolated dependency environment](../README.md#validate) with Python 3.10+ when needed. Keep the repository's required `python3` commands and additionally verify the supported PyYAML path through `.venv/bin/python` after parser changes; the system Ruby fallback is exercised when PyYAML is absent.
+Use any Python 3.10 or newer; nothing needs to be installed.
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -26,12 +23,18 @@ python3 scripts/install.py --check
 git diff --check
 ```
 
-Repeat `install.py` and `install.py --check` with the `--host` or `--target` of every other installed mirror on this machine, such as `--host claude`.
+Repeat `install.py` and `install.py --check` with the `--host` or `--target` of every other installed mirror on this machine, such as `--host claude`. When available, also run host validators against `skills/doc-sync/`, such as Codex skill-creator's `quick_validate.py` or the Agent Skills `skills-ref validate`.
 
-When a rule source changes, update the [maintenance standard](../skills/doc-sync/references/doc-maintenance.md) and its check date; when a host changes discovery or metadata rules, update [Host compatibility](host-compatibility.md).
-When available, also run host validators against `skills/doc-sync/`, such as Codex skill-creator's `quick_validate.py` or the Agent Skills `skills-ref validate`.
+CI runs the unit tests and `validate_repo.py` on Python 3.10 without installing packages, on Ubuntu, macOS, and Windows.
 
-For a substantial skill revision, forward-test realistic requests in temporary projects, including a new bundle and the migration of v0.2 and v0.1 projects. Verify the resulting artifacts and scope behavior; string-matching instructions is not a behavioral test. Keep fixtures free of private project material.
+## Forward testing
+
+Structural checks do not show whether a model finds hidden constraints or skips needless reading. After a substantial skill revision, compare one project snapshot before and after a doc-sync tidy-up, with the same model, permissions, global instructions, and skill visibility, a fresh directory and session per task, and task prompts that never mention docs:
+
+- **Positive task:** a change that depends on a constraint the code does not show and alters a documented contract. Observe whether the model finds the constraint before editing, makes the change correctly, and updates the right authoritative doc.
+- **Negative task:** a change confined to one module's internals. Observe whether the model edits the code directly, skips unrelated doc reading, and leaves the docs untouched.
+
+The tidy-up session must not see the tasks or the scoring criteria. Report the actual trajectories; string-matching instructions is not a behavioral test. Keep fixtures free of private project material.
 
 ## Vendored project copies
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import importlib.util
 import os
 import shutil
@@ -69,14 +70,13 @@ class InstallTests(unittest.TestCase):
     def test_skills_root_keeps_only_the_installed_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "skills" / "doc-sync"
-            legacy = target.parent / ".doc-sync-backup"
-            legacy.mkdir(parents=True)
-            (legacy / "SKILL.md").write_text("old copy", encoding="utf-8")
+            self.assertEqual(self.run_installer("--target", str(target)).returncode, 0)
+            (target / "SKILL.md").write_text("drift", encoding="utf-8")
             completed = self.run_installer("--target", str(target), "--force")
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual([path.name for path in target.parent.iterdir()], ["doc-sync"])
-            retired = target.parent.parent / ".doc-sync-install" / "legacy-backup" / "SKILL.md"
-            self.assertEqual(retired.read_text(encoding="utf-8"), "old copy")
+            backup = target.parent.parent / ".doc-sync-install" / "backup" / "SKILL.md"
+            self.assertEqual(backup.read_text(encoding="utf-8"), "drift")
 
     def test_extra_and_missing_files_are_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -190,7 +190,7 @@ class InstallTests(unittest.TestCase):
                 "---\nname: doc-sync\ndescription: broken: yaml\n---\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ValueError, "invalid YAML frontmatter"):
+            with self.assertRaisesRegex(ValueError, "canonical skill is invalid: .*field 'description'"):
                 installer.validate_source(source)
 
     def test_source_validation_rejects_malformed_agent_yaml(self) -> None:
@@ -202,7 +202,7 @@ class InstallTests(unittest.TestCase):
                 "interface:\n  display_name: [broken\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ValueError, "invalid YAML"):
+            with self.assertRaisesRegex(ValueError, "field 'interface.display_name'"):
                 installer.validate_source(source)
 
     def test_source_validation_accepts_reversed_skill_frontmatter_order(self) -> None:
@@ -223,6 +223,104 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
             installer.validate_source(source)
+
+    def isolated_env(self, root: Path) -> dict[str, str]:
+        env = os.environ.copy()
+        env["XDG_CACHE_HOME"] = str(root / "cache")
+        env["LOCALAPPDATA"] = str(root / "cache")
+        return env
+
+    def test_work_root_stays_outside_shallow_and_project_targets(self) -> None:
+        installer = load_installer_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "project"
+            (project / ".git").mkdir(parents=True)
+            in_project = project / ".claude" / "skills" / "doc-sync"
+            shallow = root / "doc-sync"
+            standard = root / "home" / "skills" / "doc-sync"
+            with mock.patch.dict(os.environ, self.isolated_env(root)):
+                cache = installer.user_cache_root()
+                self.assertEqual(installer.work_root(standard), root / "home" / ".doc-sync-install")
+                self.assertEqual(installer.work_root(shallow).parent, cache)
+                self.assertEqual(installer.work_root(in_project).parent, cache)
+                self.assertNotEqual(installer.work_root(shallow), installer.work_root(in_project))
+
+            env = self.isolated_env(root)
+            self.assertEqual(self.run_installer("--target", str(in_project), env=env).returncode, 0)
+            (in_project / "SKILL.md").write_text("drift", encoding="utf-8")
+            forced = self.run_installer("--target", str(in_project), "--force", env=env)
+            self.assertEqual(forced.returncode, 0, forced.stderr)
+            self.assertEqual(
+                sorted(path.relative_to(project).as_posix() for path in project.rglob("*") if path.is_dir()),
+                [".claude", ".claude/skills", ".claude/skills/doc-sync", ".claude/skills/doc-sync/agents",
+                 ".claude/skills/doc-sync/references", ".claude/skills/doc-sync/scripts", ".git"],
+            )
+            backups = list((root / "cache" / "doc-sync-install").glob("*/backup/SKILL.md"))
+            self.assertEqual([path.read_text(encoding="utf-8") for path in backups], ["drift"])
+
+    def test_check_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            env = self.isolated_env(root)
+            env["HOME"] = env["USERPROFILE"] = str(root / "home")
+            standard = root / "home" / "skills" / "doc-sync"
+            shallow = root / "doc-sync"
+
+            def snapshot() -> list[tuple[str, int]]:
+                return sorted(
+                    (path.relative_to(root).as_posix(), path.stat().st_mtime_ns)
+                    for path in root.rglob("*")
+                )
+
+            before = snapshot()
+            for target in (standard, shallow):
+                completed = self.run_installer("--target", str(target), "--check", env=env)
+                self.assertEqual(completed.returncode, 1)
+            self.assertEqual(snapshot(), before)
+            self.assertEqual(self.run_installer("--target", str(standard), env=env).returncode, 0)
+            installed = snapshot()
+            check = self.run_installer("--target", str(standard), "--check", env=env)
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertEqual(snapshot(), installed)
+
+    def test_cross_device_copy_failure_cleans_partial_target_and_restores(self) -> None:
+        installer = load_installer_module()
+        real_copytree = shutil.copytree
+        for had_target in (True, False):
+            with self.subTest(had_target=had_target), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                source = root / "source"
+                target = root / "skills" / "doc-sync"
+                source.mkdir()
+                (source / "SKILL.md").write_text("new", encoding="utf-8")
+                if had_target:
+                    target.mkdir(parents=True)
+                    (target / "SKILL.md").write_text("old", encoding="utf-8")
+                failed: list[Path] = []
+
+                def cross_device_rename(src, dst):
+                    raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+
+                def interrupted_copytree(src, dst, *args, **kwargs):
+                    if Path(dst) == target and not failed:
+                        failed.append(Path(dst))
+                        Path(dst).mkdir(parents=True)
+                        (Path(dst) / "partial.txt").write_text("partial", encoding="utf-8")
+                        raise OSError("copy interrupted")
+                    return real_copytree(src, dst, *args, **kwargs)
+
+                with mock.patch.object(installer.os, "rename", side_effect=cross_device_rename), \
+                        mock.patch.object(installer.shutil, "copytree", side_effect=interrupted_copytree):
+                    with self.assertRaisesRegex(OSError, "copy interrupted"):
+                        installer.install(source, target)
+                self.assertEqual(failed, [target])
+                if had_target:
+                    self.assertEqual(sorted(path.name for path in target.iterdir()), ["SKILL.md"])
+                    self.assertEqual((target / "SKILL.md").read_text(encoding="utf-8"), "old")
+                else:
+                    self.assertFalse(target.exists())
+                self.assertFalse(list((root / ".doc-sync-install").glob("staging-*")))
 
 
 if __name__ == "__main__":

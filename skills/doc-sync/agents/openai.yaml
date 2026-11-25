@@ -1,7 +1,7 @@
 interface:
-  display_name: "OKF + Doc Sync"
-  short_description: "按 OKF 标准同步活文档、知识索引、状态声明与引用证据"
-  default_prompt: "Use $doc-sync to synchronize this project's living docs and OKF bundle after the confirmed change, preserving its declared format version."
+  display_name: "Doc Sync"
+  short_description: "路由隐性约束，按事实变化同步唯一权威活文档与项目入口"
+  default_prompt: "Use $doc-sync to check whether this change altered any documented behavior, constraint, command, status, or path, and update only the affected authoritative docs and entrypoint routes."
 
 policy:
   allow_implicit_invocation: true

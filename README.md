@@ -1,11 +1,12 @@
 # okf-doc-sync
 
-`okf-doc-sync` (DocSync) is the canonical repository for `doc-sync`, a host-neutral [Agent Skill](https://agentskills.io/specification) that any agent harness, model, or person can use. The skill combines two completion gates:
+`okf-doc-sync` (DocSync) is the canonical repository for `doc-sync`, a host-neutral [Agent Skill](https://agentskills.io/specification) that any agent harness, model, or person can use. It helps an agent enter a project quickly, find the constraints the code does not show, make the change correctly, and keep the one authoritative document for each fact current:
 
-1. synchronize authoritative living documentation, including agent instruction files, after meaning changes, without omissions or duplicated sources, following a [maintenance standard](skills/doc-sync/references/doc-maintenance.md) distilled from model, harness, and industry guidance; and
-2. maintain an [Open Knowledge Format (OKF)](https://github.com/open-knowledge-format/open-knowledge-format) knowledge bundle by default. It maintains only the current OKF version (v0.3) and upgrades older bundles with a compact migration guide.
+- **Read-time routing.** The project entrypoint (`AGENTS.md`, a host file that imports it, or `README.md`) says which contract to read before which kind of change, and when no further reading is needed. Routes exist only where the code alone would mislead.
+- **Conditional write-time rule.** Docs change only when a change alters, or adds a cross-session rule about, a described behavior, constraint, command, status, or path. Otherwise they stay untouched.
+- **Single layer.** Each fact lives in one authoritative living doc, following a [maintenance standard](skills/doc-sync/references/doc-maintenance.md) distilled from model, harness, and industry guidance. There is no parallel knowledge bundle.
 
-Projects no longer need to opt into OKF manually. During durable initialization or authorized governance repair, `doc-sync` establishes the minimal OKF governance spine while keeping project living docs authoritative. Local synchronization updates affected facts and navigation; valid entrypoints and unrelated coverage rows need no rewrite. Pre-existing governance defects outside the authorized scope are reported with their validation impact.
+The repository name is historical; the skill no longer maintains Open Knowledge Format bundles.
 
 ## Quick start
 
@@ -19,18 +20,17 @@ Then ask your agent to sync the project's docs after a change, or invoke the ski
 
 ## Repository layout
 
-- `skills/doc-sync/` — canonical installable Agent Skill; `agents/openai.yaml` is optional Codex metadata that other hosts ignore.
-- `skills/doc-sync/references/` — cited documentation maintenance standard, delegated-execution guidance, OKF interpretation, and project policies.
-- `skills/doc-sync/scripts/` — reusable OKF validator shipped with the skill.
+- `skills/doc-sync/` — the installable Agent Skill; `agents/openai.yaml` is optional Codex metadata that other hosts ignore.
+- `skills/doc-sync/references/` — the cited documentation maintenance standard.
+- `skills/doc-sync/scripts/` — the zero-dependency documentation checker shipped with the skill.
 - `scripts/install.py` — installs or checks a host's mirror (`--host codex|agents|claude` or `--target`).
-- `scripts/validate_repo.py` — validates this repository's structure, links, skill metadata, and OKF bundle.
-- `tests/` — regression tests for installation, repository validation, Markdown link parsing, and OKF/DocSync profile behavior.
-- `docs/` — authoritative architecture and maintenance documentation.
-- `okf/` — this project's own OKF v0.3 knowledge bundle.
+- `scripts/validate_repo.py` — this repository's self-check.
+- `tests/` — regression tests for the checker, the installer, and the self-check.
+- `docs/` — architecture, host compatibility, and maintenance documentation.
 
 ## Install
 
-Install the canonical skill into a host's skills directory. Each command copies the same tree; see [Host compatibility](docs/host-compatibility.md) for the default targets and duplicate-name cautions.
+Each command copies the same tree; see [Host compatibility](docs/host-compatibility.md) for default targets and duplicate-name cautions.
 
 ```bash
 python3 scripts/install.py                  # Codex: ${CODEX_HOME:-~/.codex}/skills/doc-sync
@@ -39,35 +39,31 @@ python3 scripts/install.py --host claude    # Claude Code: ${CLAUDE_CONFIG_DIR:-
 python3 scripts/install.py --target DIR/doc-sync
 ```
 
-If an existing installation differs, the installer refuses to overwrite it. Review the reported paths, then rerun with `--force` to keep the old tree as a rollback backup in `.doc-sync-install/backup` beside the skills root and install the canonical source. Check that an installed mirror is byte-for-byte current with the same host or target:
+If an existing installation differs, the installer refuses to overwrite it. Review the reported paths, then rerun with `--force`; the old tree is kept as a rollback backup outside the skills root (see [Architecture](docs/architecture.md#source-and-installation)). Check that a mirror is byte-for-byte current with the same host or target:
 
 ```bash
 python3 scripts/install.py --host claude --check
 ```
 
-### Optional delegated execution
+Without skill support, follow [`SKILL.md`](skills/doc-sync/SKILL.md) directly and run:
 
-Ordinary installation and synchronization use your existing session or host delegation policy. Without a policy or an available route, the agent completes the work in the main session. Request [delegation setup](skills/doc-sync/references/delegation.md) to choose and persist a model or change when to reconfirm it.
-
-Without skill support, follow [`SKILL.md`](skills/doc-sync/SKILL.md) directly and run `python3 skills/doc-sync/scripts/validate_okf.py <project>/okf --doc-sync-profile`.
+```bash
+python3 skills/doc-sync/scripts/validate_docs.py <project-root>
+```
 
 ## Validate
 
-The package requires Python 3.10+ and PyYAML. Use a compatible interpreter to create a project-local virtual environment, then install the declared dependencies there. Without PyYAML, the standalone validator falls back to system Ruby's YAML parser.
+Python 3.10 or newer with only the standard library; there is nothing to install.
 
 ```bash
-python3 -m venv .venv  # Use Python 3.10+ for this command.
-.venv/bin/python -m pip install .
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python scripts/validate_repo.py
+python3 -m unittest discover -s tests -v
+python3 scripts/validate_repo.py
 git diff --check
 ```
 
-The upstream OKF conformance model deliberately tolerates broken links, missing optional navigation files, unknown versions, and unknown extensions when consuming bundles. `--doc-sync-profile` applies the stricter v0.3 producer profile: coverage, index reachability, title/description, `generated`, structured `sources`, and strict maintained links and path fields. Older bundles are still read; the profile reports their declared version and remaining work as migration. See the [OKF reference](skills/doc-sync/references/okf.md) and the [migration guide](skills/doc-sync/references/okf-migration.md).
+## Contributing
 
-## Contributing and releases
-
-Read [`AGENTS.md`](AGENTS.md) and the [maintenance workflow](docs/maintenance.md). Make changes here, validate them, and reinstall any local mirror with `--check`. Project-local vendored copies are updated only when work in those projects next invokes doc-sync; they are not bulk-rewritten from here.
+Read [`AGENTS.md`](AGENTS.md) and the [maintenance workflow](docs/maintenance.md). Make changes here, validate them, and reinstall any local mirror with `--check`. Project-local vendored copies are updated only when work in those projects next invokes doc-sync.
 
 ## License
 

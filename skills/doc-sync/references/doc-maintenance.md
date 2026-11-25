@@ -1,22 +1,25 @@
 # Documentation maintenance standard
 
-Read this to decide which documentation a confirmed change affects, where new content belongs, and how to avoid duplicated or dead content. Each rule cites its source; the [source list](#sources) records when it was checked.
+Read this to decide whether a confirmed change affects documentation, where the affected fact lives, and how to keep the project entrypoint useful. Rules marked with a source tag are distilled from the [sources](#sources); untagged rules are DocSync policy.
 
 ## Contents
 
 - When documentation must change
 - Surface checklist
-- Placement
 - One source of truth
-- Shareable content
+- Status states
+- Placement
+- Project entrypoint
 - Agent instruction files
+- Shareable content
 - Review and verification
 - Sources
 
 ## When documentation must change
 
-- Change documentation in the same change as the code it describes; reviewers treat missing doc updates as incomplete work. [Google, GitLab]
-- Documentation is required when user-, operator-, or integrator-visible behavior, UI, API, configuration, installation, or a documented process changes, and when something is deprecated or removed. A purely internal change with an unchanged contract usually needs no user documentation, but still check agent instruction files, comments, and docstrings it invalidates. [GitLab, Google]
+- Change documentation in the same change as the code it describes; reviewers treat a missing doc update as incomplete work. [Google, GitLab]
+- A change needs documentation when it alters behavior, a constraint, a command, a status, or a path that a doc or the entrypoint already describes, or when it creates a rule that later sessions must follow. Deprecations and removals count. [GitLab, Google]
+- A change confined to one module's internals, with an unchanged contract, needs no documentation edit. Leave the docs untouched rather than adding a note that nothing changed.
 
 ## Surface checklist
 
@@ -24,51 +27,77 @@ Walk the rows that match the confirmed change; skip the rest.
 
 | Change | Surfaces to check |
 | --- | --- |
-| Feature or user-visible behavior | README overview, tutorials and how-to guides, reference, changelog or release notes |
+| User-visible behavior | README overview, tutorials and how-to guides, reference, changelog or release notes |
 | Interface, CLI, configuration, schema, environment variable | Reference docs, examples, docstrings and API comments, sample configs |
-| Build, test, run, release commands; layout; conventions | Agent instruction files (`AGENTS.md`, host files), README getting started, `CONTRIBUTING` |
-| Architecture or significant decision | A new decision record; the architecture overview; mark replaced decisions as superseded instead of rewriting them |
-| Deprecation or removal | Deprecation notice with replacement and timeline; delete docs for removed features; changelog |
-| Status claim (active, pending, retired) | Every place stating that status; keep the state labels distinct |
+| Build, test, run, release commands; layout; conventions | Agent instruction files, README getting started, `CONTRIBUTING` |
+| Hidden constraint, design reason, or trap | Its single authoritative doc, and an entrypoint route if readers would otherwise miss it |
+| Architecture or significant decision | A new decision record and the architecture overview; mark replaced decisions as superseded |
+| Deprecation or removal | Notice with replacement and timeline; delete docs for removed features; changelog |
+| Status claim | Every place stating that status, using the states below |
 | Cross-repository dependency | The other side's docs when in scope, otherwise a recorded follow-up |
-| Project knowledge | OKF concepts, coverage manifest, indexes, and update log |
+
+## One source of truth
+
+- Keep one authoritative location per fact and link to it elsewhere. Duplicated text drifts. [Google]
+- Prefer a small set of fresh, accurate docs over a large stale set. Delete inaccurate docs first; when unsure whether to migrate a doc, leave it behind. [Google]
+- Do not hide unfinished or obsolete content in comments; remove it. [GitLab]
+- Focus on what the code cannot show: reasons, constraints, external limits, traps, and status. Do not restate signatures, file listings, or behavior a reader sees by opening the code. [Claude Code best practices]
+
+## Status states
+
+Use exactly these labels when a doc states whether something is in force, and keep them distinct:
+
+| State | Meaning |
+| --- | --- |
+| `active` | In force now; grounded in current code, configuration, runtime, or user confirmation |
+| `fallback` | Present and usable, but not the path currently taken |
+| `pending verification` | Implemented or claimed, not yet confirmed |
+| `historical` | A dated record of past state; never rewritten into a current claim |
+| `retired` | Removed; keep only where a reader needs to know it is gone |
+
+A passing test or validator proves structure, not that a feature is `active`, deployed, or reviewed.
 
 ## Placement
 
 - Classify new content by reader need and keep the kinds separate: tutorials teach, how-to guides solve one task, reference describes the machinery, explanation gives the why. [Diátaxis]
-- A README states what the directory holds, what to read first, who maintains it, and links to docs kept elsewhere. A docs directory covers getting started, testing, debugging, and releasing. [Google]
-- Design docs and PRDs become records of decisions after implementation, not current guides. [Google] Record significant decisions with title, context, decision, status, and consequences; when a decision is reversed, keep the old record and mark it superseded with a link to its replacement. [ADR]
-- Keep a changelog for people: newest version first, grouped by Added, Changed, Deprecated, Removed, Fixed, and Security, with an Unreleased section. [Keep a Changelog]
+- A README states what the directory holds, what to read first, and links to docs kept elsewhere. [Google]
+- Design docs become records of decisions after implementation, not current guides. [Google] Record significant decisions with title, context, decision, status, and consequences; when a decision is reversed, keep the old record and mark it superseded with a link to its replacement. [ADR]
+- Keep a changelog for people: newest version first, grouped by Added, Changed, Deprecated, Removed, Fixed, and Security. [Keep a Changelog]
 
-## One source of truth
+## Project entrypoint
 
-- Keep one authoritative location per fact; link to it elsewhere. Duplicated text drifts. [Google]
-- Prefer a small set of fresh, accurate docs over a large stale set. Delete inaccurate docs first; when unsure whether to migrate a doc, leave it behind. [Google]
-- Do not hide unfinished or premature content in comments; remove it until it is ready. [GitLab]
-- OKF concepts summarize and link authoritative docs; they do not restate them in full.
+The entrypoint is the instruction file a host loads first. Its job is routing, not content.
 
-## Shareable content
-
-- Before writing to a repository that is or may become public, keep machine-specific absolute paths, usernames, private project or employer names, and personal records out of it; use repository-relative paths and generic descriptions, and keep such records in a private location.
-- Keep links resolvable from a fresh checkout. Links to sibling checkouts or local files break for every other reader; cite a public URL or plain text instead.
+- **Reuse what exists.** Keep the project's current entrypoint structure and any existing rule equivalent to the write-time rule in `SKILL.md`. Do not reword an equivalent rule.
+- **Route only hidden constraints.** A route names a kind of change, the contract to read before making it, and when reading can stop. Add a route only where a reader working from the code would otherwise break a constraint.
+- **State the no-read boundary.** Say which changes need no doc reading, so readers do not pre-read the project for routine edits.
+- **Size.** As a tidying reference, not a gate, an entrypoint that routes to more than about 10 documents or runs past about 120 lines usually mixes content into routing; move content into the routed docs.
+- **Routine syncs.** Edit a route only when its target, trigger, or boundary changed, or a new hidden constraint appeared. A correct entrypoint needs no rewrite for each change.
+- **Reachability.** Every maintained file under `docs/` should be reachable from the entrypoint through links, an index, `@path` imports, or backtick paths in an entrypoint or index. An index that the entrypoint never reaches does not count.
 
 ## Agent instruction files
 
-- `AGENTS.md` is the cross-tool "README for agents": project overview, build and test commands, code style, testing, and security notes. The nearest file to the edited path wins, and explicit user prompts override it. Treat it as living documentation. [AGENTS.md]
-- Include only what an agent cannot infer: commands it cannot guess, non-default style rules, test instructions, repository etiquette, project-specific architecture decisions, environment quirks, and non-obvious gotchas. Exclude what the code shows, standard conventions, detailed API docs (link instead), frequently changing data, long tutorials, and file-by-file descriptions. For each line, ask whether removing it would cause mistakes. [Claude Code best practices]
-- Keep files short and free of contradictions; long or conflicting files reduce adherence. Move rarely needed procedures into skills or linked docs. [Claude Code memory, Claude Code best practices]
+- `AGENTS.md` is the cross-tool "README for agents". The nearest file to the edited path wins, and explicit user prompts override it. Treat it as living documentation. [AGENTS.md]
+- Include only what an agent cannot infer: commands it cannot guess, non-default style rules, test instructions, repository etiquette, architecture decisions, environment quirks, and gotchas. Exclude what the code shows, standard conventions, detailed API docs (link instead), frequently changing data, and file-by-file descriptions. For each line, ask whether removing it would cause mistakes. [Claude Code best practices]
+- Keep files short and free of contradictions; long or conflicting files reduce adherence. Move rarely needed procedures into linked docs or skills. [Claude Code memory, Claude Code best practices]
 - Host loading rules that affect duplication:
 
 | Host | Reads | Avoid duplication by |
 | --- | --- | --- |
 | Codex | `AGENTS.override.md` or `AGENTS.md` per directory from root to the working directory, within a combined size cap | Keeping shared rules in `AGENTS.md` and overrides near the specialized code [Codex AGENTS.md] |
-| Claude Code | `CLAUDE.md`; reads `AGENTS.md` directly when no project `CLAUDE.md` exists | Omitting `CLAUDE.md` unless Claude-specific rules exist; otherwise starting it with an `@AGENTS.md` import and adding only Claude-specific lines. A sentence telling Claude to read `AGENTS.md` is weaker than the import [Claude Code memory] |
+| Claude Code | `CLAUDE.md`; reads `AGENTS.md` directly when no project `CLAUDE.md` exists | Omitting `CLAUDE.md` unless Claude-specific rules exist; otherwise starting it with an `@AGENTS.md` import and adding only Claude-specific lines [Claude Code memory] |
 | Other `AGENTS.md` tools | `AGENTS.md`, sometimes after configuration | Pointing the tool at `AGENTS.md` instead of copying it [AGENTS.md] |
+
+## Shareable content
+
+- Before writing to a repository that is or may become public, keep machine-specific absolute paths, usernames, private project or employer names, and personal records out of it; use repository-relative paths and generic descriptions.
+- Keep links resolvable from a fresh checkout. Links to sibling checkouts or local files break for every other reader; cite a public URL or plain text instead.
 
 ## Review and verification
 
-- Authors remain responsible for the technical accuracy of AI-generated documentation; it still needs review. [GitLab]
-- Verify with a check that produces a pass or fail: resolve changed links, run documented commands and examples where feasible, and run the bundle validator. Report the evidence, not only the conclusion. [Claude Code best practices]
+- Authors remain responsible for the technical accuracy of AI-generated documentation. [GitLab]
+- Verify with checks that pass or fail: resolve changed links and anchors, run documented commands where feasible, and run the bundled checker. Report the evidence, not only the conclusion. [Claude Code best practices]
+- Fix defects the change introduced or that lie in the authorized scope. Report pre-existing defects outside it with location and impact instead of widening the task or claiming a full pass.
 
 ## Sources
 

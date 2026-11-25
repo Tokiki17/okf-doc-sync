@@ -1,32 +1,38 @@
 # Architecture
 
-## Source and installation flow
+## Source and installation
 
-`skills/doc-sync/` is the only editable source for the personal skill. `scripts/install.py` copies that directory into a host's skills directory (`--host codex`, `agents`, or `claude`, or any `--target`) and verifies exact file-content parity. The skill itself is host-neutral; see [Host compatibility](host-compatibility.md).
+`skills/doc-sync/` is the only editable source. `scripts/install.py` copies it into a host's skills directory (`--host codex`, `agents`, or `claude`, or any `--target`) and verifies byte-for-byte parity. See [Host compatibility](host-compatibility.md) for default targets.
 
 ```text
-DocSync/skills/doc-sync/  ->  scripts/install.py [--host codex|agents|claude | --target DIR]  ->  <host>/skills/doc-sync/
-          canonical                                                                              installed mirror
+skills/doc-sync/  ->  scripts/install.py [--host codex|agents|claude | --target DIR]  ->  <host>/skills/doc-sync/
+   canonical                                                                              installed mirror
 ```
 
-The installer stages the new tree and keeps the rollback backup in `.doc-sync-install/` beside the skills root, never inside it, because hosts treat any directory containing `SKILL.md` there as another skill; a legacy `.doc-sync-backup` inside the root is moved out on the next install. Staging failures leave the active installation untouched; failures after replacement restore the previous installation. `--check` is read-only and fails on missing, extra, or content-divergent files. Current hosts can use the documented `.agents/skills` locations through `--target`; the existing default remains compatible with this host. See [Host compatibility](host-compatibility.md).
+- **Work root.** Hosts load every directory containing `SKILL.md` under a skills root, so staging and the rollback backup never live there. A standard `<base>/skills/doc-sync` target uses `<base>/.doc-sync-install/`. A shallow target, or one inside a repository (any ancestor holds `.git`), uses the user cache, `~/.cache/doc-sync-install/<hash>/` (`$XDG_CACHE_HOME` when set, `%LOCALAPPDATA%` on Windows), so no project tree gains install artifacts.
+- **Replacement.** On one device the old target is renamed to the backup and the staged tree renamed into place. When the work root is on another device (`EXDEV`), the old target is first copied to the backup with symlinks preserved, and a marker is set before the new target is written. If anything fails after that marker, the partial target is removed, then the backup is restored if a target existed before, or the target is left absent.
+- **Read-only modes.** `--check` and `--dry-run` write nothing, including bytecode for the loaded validator. `--check` fails on missing, extra, or content-divergent files.
+- A divergent installation is replaced only with `--force`. Symlinked targets are refused.
 
-## Knowledge model
+## Documentation model
 
-The skill maintains two complementary layers:
+The skill keeps one layer of authoritative living docs; there is no parallel knowledge bundle. Each fact has one home, and docs record what the code cannot show: reasons, constraints, traps, and status in five states (`active`, `fallback`, `pending verification`, `historical`, `retired`).
 
-- authoritative living docs, including agent instruction files, describe current project contracts and behavior in their natural project locations, following the cited [maintenance standard](../skills/doc-sync/references/doc-maintenance.md);
-- the `okf/` bundle provides agent-readable progressive disclosure, metadata, citations, and cross-links.
+A project's instruction entrypoint carries read-time routes (which contract to read before which kind of change, and when reading can stop) and one conditional write-time rule. This repository's [AGENTS.md](../AGENTS.md) is the reference example. The [maintenance standard](../skills/doc-sync/references/doc-maintenance.md) holds the cited rules.
 
-OKF is a default part of doc-sync for durable projects. It is not an alternative source of truth and does not require a separate project opt-in.
+## Validation
 
-## Validation layers
+`skills/doc-sync/scripts/validate_docs.py` is shipped with the skill and uses only the Python 3.10+ standard library.
 
-- `skills/doc-sync/scripts/validate_okf.py` keeps generic OKF validation permissive, while `--doc-sync-profile` applies the maintained v0.3 producer profile: the governance spine, description/title metadata, `generated`, index reachability, and maintained links, plus structured provenance/trust/lifecycle checks. Older or undeclared bundles are read best-effort and reported for migration. The checks cover file-relative path fields, RFC 3339 date-only timestamps, blank-as-absent and single-item-list handling, generic actor schemes, `superseded_by`, root bundle metadata, duplicate-key detection, Attested Computation parameters and computation location, and skipping of untyped or dot-path Markdown for consumers. Its zero-dependency Markdown scanner handles inline/reference links, footnote boundaries, balanced destinations, code/image exclusions, and bundle-root containment.
-- `scripts/validate_repo.py` checks this repository's required files, Skill/UI metadata against Agent Skills limits (portable frontmatter keys, description length, `SKILL.md` line count), maintained Markdown links outside `okf/`, and both worktree and staged whitespace. It delegates the bundle to the shipped DocSync profile so file-relative and bundle-root-absolute OKF links retain their specified meaning.
-- `tests/` protects OKF consumer tolerance, the DocSync producer profile, Markdown parsing, repository validation, and installation behavior.
-- the upstream skill-creator validator is run during local release work when available.
+- **Two masking layers.** Block masking blanks frontmatter, fenced code (up to three leading spaces), indented code blocks, and HTML comments, but keeps 4-space nested list items and inline code text. Heading anchors and backtick paths are read from this layer, so a heading such as ``## Using `foo()` `` keeps its code text in the anchor. Full masking also blanks inline code spans, including spans that cross lines within a paragraph, and is the only layer used to extract Markdown links.
+- **Reachability.** Traversal starts only at the real entrypoint: root `AGENTS.md` and `CLAUDE.md`, or `README.md` when neither exists. A `docs/index.md` that the entrypoint does not reach is not a start point. Every reached document follows its Markdown links. Reached entrypoint and index files (`AGENTS.md`, `CLAUDE.md`, `README.md`, any `index.md`) also follow `@path` imports and backtick paths naming existing Markdown files. Backtick paths in ordinary documents are checked for existence but never count as navigation. Unreached `docs/**/*.md` outside `--historical-dir` are warnings, or errors with `--strict`. A root `CLAUDE.md` beside `AGENTS.md` without an `@AGENTS.md` import is a warning.
+- **Links and anchors.** A leading `/` resolves from the project root; other links resolve from the document's directory. Each target must stay inside the root both lexically and after `resolve()`, match letter case segment by segment through `os.listdir`, and, for a `#fragment`, name a real heading (GitHub slug rules) or HTML anchor.
+- **Backtick paths.** In non-historical docs, `<top_dir>/...` (first segment is a real top-level directory) resolves from the project root and `./...` or `../...` from the document's directory. Text with spaces, placeholders, or globs is ignored.
+- **Private paths.** `--check-private-paths` enumerates files with `git ls-files -z --cached --others --exclude-standard` (falling back to a filtered walk) and rejects POSIX and Windows home-directory paths.
+- **Skill metadata.** `validate_skill_tree()` checks `SKILL.md` frontmatter, size limits, local links, and optional `agents/openai.yaml`. Its minimal YAML reader accepts only block mappings of scalars, and every error names the offending field. `install.py` and `validate_repo.py` both call it.
+
+`scripts/validate_repo.py` runs this repository's gate: required files, no `CLAUDE.md`, skill metadata, strict documentation checks with private-path rejection, a static check that every Python file parses as Python 3.10 (`ast.parse(..., feature_version=(3, 10))`) and imports only modules in `sys.stdlib_module_names`, and whitespace checks on the worktree and staged diffs. `tests/` covers the validator, installer recovery and isolation, and the repository gate.
 
 ## Evidence boundaries
 
-The validator reads local artifacts and never fetches sources or executes an OKF executor/attester. Structural success does not establish human review, source freshness, factual truth, runtime acceptance, or a computation attestation. The workflow records in-scope fixes and pre-existing external-scope defects separately while retaining whole-bundle diagnostics. Publishing still requires all repository gates.
+The checks read local files only. A pass establishes structure and navigation, not that a documented fact is true, current, reviewed, or deployed. They do not measure whether a model finds hidden constraints or skips unneeded reading; that needs forward tests (see [Maintenance](maintenance.md#forward-testing)).
