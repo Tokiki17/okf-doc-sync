@@ -593,20 +593,24 @@ def heading_anchors(text: str) -> set[str]:
 # Paths
 
 
-def _exact_case_exists(root: Path, parts: tuple[str, ...]) -> bool:
-    current = root
+def _resolve_components(base: Path, parts: tuple[str, ...]) -> tuple[Path, bool]:
+    current = base.resolve(strict=True)
+    exact_case = True
     for part in parts:
         if part == "..":
-            current /= part
+            # Windows can fold '..' before following a symlink in a full path.
+            if not current.is_dir():
+                raise NotADirectoryError(current)
+            current = current.parent
             continue
-        try:
-            names = os.listdir(current)
-        except OSError:
-            return False
-        if part not in names:
-            return False
-        current = current / part
-    return True
+        if exact_case:
+            try:
+                exact_case = part in os.listdir(current)
+            except OSError:
+                exact_case = False
+        # Keep a drive-like component relative to the current directory.
+        current = (current / f"./{part}").resolve(strict=True)
+    return current, exact_case
 
 
 @dataclass
@@ -628,6 +632,8 @@ def resolve_local(
     """Check a local path's lexical boundary, exact case, and resolved location."""
     root = Path(os.path.abspath(root))
     if not root_relative and decoded.startswith(("~/", "~\\")):
+        if check_private_paths:
+            return ResolvedPath(Path(decoded), "escapes the project root", private_violation=True)
         decoded = os.path.expanduser(decoded)
     home_match = HOME_PATH_PATTERN.match(decoded)
     absolute_windows = WINDOWS_ABSOLUTE_RE.match(decoded)
@@ -653,22 +659,22 @@ def resolve_local(
         return ResolvedPath(lexical, "escapes the project root", private_violation=True)
 
     try:
-        real = joined.resolve(strict=True)
-    except (OSError, RuntimeError):
-        return ResolvedPath(lexical, "does not exist")
-    real_root = root.resolve()
-    inside_root = inside_root and real.is_relative_to(real_root)
-    if check_private_paths and not inside_root:
-        return ResolvedPath(lexical, "resolves outside the project root", private_violation=True)
-
-    try:
         case_base = Path(os.path.commonpath([case_base, lexical, joined]))
     except ValueError:
         # A different drive has no common prefix.
         case_base = Path(joined.anchor)
     if not joined.is_relative_to(case_base):
         case_base = Path(joined.anchor)
-    if not _exact_case_exists(case_base, joined.relative_to(case_base).parts):
+
+    try:
+        real, exact_case = _resolve_components(case_base, joined.relative_to(case_base).parts)
+    except (OSError, RuntimeError):
+        return ResolvedPath(lexical, "does not exist")
+    real_root = root.resolve()
+    inside_root = inside_root and real.is_relative_to(real_root)
+    if check_private_paths and not inside_root:
+        return ResolvedPath(lexical, "resolves outside the project root", private_violation=True)
+    if not exact_case:
         return ResolvedPath(lexical, "differs in letter case from the file on disk")
     if ".." in joined.parts:
         # Folding a parent segment may change the destination after a symlink.
@@ -858,7 +864,7 @@ def _imports(text: str) -> list[tuple[str, int]]:
     results = []
     for match in IMPORT_RE.finditer(masked):
         value = match.group(1).rstrip(".,;:!?")
-        if "/" in value or re.search(r"\.[A-Za-z0-9]+$", value):
+        if "/" in value or value.startswith("~\\") or re.search(r"\.[A-Za-z0-9]+$", value):
             results.append((value, _line_of(masked, match.start())))
     return results
 

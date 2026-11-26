@@ -359,6 +359,19 @@ class LinkAndPathTests(ProjectTestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("resolves outside the project root", errors[0])
 
+    def test_parent_segment_requires_an_existing_directory(self) -> None:
+        self.write("guide.md", "# Guide\n")
+        self.write("file.txt")
+        self.write("AGENTS.md", "[missing](missing/../guide.md)\n[file](file.txt/../guide.md)\n")
+
+        self.assertEqual(
+            self.validate().errors,
+            [
+                "AGENTS.md:1: broken link 'missing/../guide.md' (does not exist)",
+                "AGENTS.md:2: broken link 'file.txt/../guide.md' (does not exist)",
+            ],
+        )
+
     def test_public_path_boundaries_also_apply_to_historical_documents(self) -> None:
         self.write("../sibling-repo/guide.md", "# External\n")
         self.write("docs/archive/record.md", "[stale](gone.md) [external](../../../sibling-repo/guide.md)\n")
@@ -392,15 +405,21 @@ class LinkAndPathTests(ProjectTestCase):
         self.assertTrue(any("Q:/synthetic/guide.md" in error and "escapes the project root" in error for error in errors))
 
     def test_home_import_is_checked_against_workspace_or_public_boundary(self) -> None:
-        home = self.write("../synthetic-home/guide.md", "# Guide\n").resolve()
-        self.write("CLAUDE.md", "@~/guide.md\n")
-        with mock.patch.object(self.validator.os.path, "expanduser", return_value=str(home)):
-            self.assertEqual(self.validate().errors, [])
-            errors = self.validate(check_private_paths=True).errors
-            self.assertEqual(len(errors), 1, errors)
-            self.assertIn("escapes the project root", errors[0])
-            home.unlink()
-            self.assertIn("does not exist", self.validate().errors[0])
+        for value in ("~/guide.md", r"~\guide.md", r"~\Makefile"):
+            target = self.write(f"../synthetic-home/{value[2:]}", "# Guide\n").resolve()
+            self.write("CLAUDE.md", f"@{value}\n")
+            with (
+                self.subTest(value=value),
+                mock.patch.object(self.validator.os.path, "expanduser", return_value=str(target)) as expanduser,
+            ):
+                self.assertEqual(self.validate().errors, [])
+                expanduser.reset_mock()
+                errors = self.validate(check_private_paths=True).errors
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("escapes the project root", errors[0])
+                expanduser.assert_not_called()
+                target.unlink()
+                self.assertIn("does not exist", self.validate().errors[0])
 
     def test_link_case_must_match_exactly(self) -> None:
         self.write("AGENTS.md", "[guide](docs/guide.md)\n")
